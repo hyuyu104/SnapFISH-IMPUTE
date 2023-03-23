@@ -1,14 +1,14 @@
 
-nm_coor_path="/Users/hongyudemacpro/Desktop/uw/lab/biostat/SnapFISH-IMPUTE_UPLOAD/data/mESC_sox2_nm/mESC_129_allele.txt"
-nm_ann_path="/Users/hongyudemacpro/Desktop/uw/lab/biostat/SnapFISH-IMPUTE_UPLOAD/data/mESC_sox2_nm/input_ann.txt"
+nm_coor_path="/usr/SnapFISH-IMPUTE/data/mESC_sox2_nm/mESC_129_allele.txt"
+nm_ann_path="/usr/SnapFISH-IMPUTE/data/mESC_sox2_nm/input_ann.txt"
 
 step=2
-lnr_path="/Users/hongyudemacpro/Desktop/uw/lab/biostat/SnapFISH-IMPUTE_UPLOAD/output/mESC_sox2/mESC_sox2_a129_lnr.txt"
-step1_path="/Users/hongyudemacpro/Desktop/uw/lab/biostat/SnapFISH-IMPUTE_UPLOAD/output/mESC_sox2/mESC_sox2_a129_step1.txt"
-step2_path="/Users/hongyudemacpro/Desktop/uw/lab/biostat/SnapFISH-IMPUTE_UPLOAD/output/mESC_sox2/mESC_sox2_a129_step2.txt"
+lnr_path="/usr/SnapFISH-IMPUTE/output/mESC_sox2/mESC_sox2_a129_lnr.txt"
+step1_path="/usr/SnapFISH-IMPUTE/output/mESC_sox2/mESC_sox2_a129_step1.txt"
+step2_path="/usr/SnapFISH-IMPUTE/output/mESC_sox2/mESC_sox2_a129_step2.txt"
 
-py_path="/Users/hongyudemacpro/opt/anaconda3/bin/python"
-wrapper_path="/Users/hongyudemacpro/Desktop/uw/lab/biostat/SnapFISH-IMPUTE_UPLOAD/impute_wrapper.py"
+py_path="/usr/opt/anaconda3/bin/python"
+wrapper_path="/usr/SnapFISH-IMPUTE/impute_wrapper.py"
 
 # $py_path IMPUTE/preprocess.py
 
