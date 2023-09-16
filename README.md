@@ -3,7 +3,7 @@
 ### Usage
 
 To run SnapFISH-IMPUTE on a computing cluster, include the following command in your bash script:
-```{bash}
+```bash
 mpiexec -np 50 python run_impute.py -o $OUT/DIRE -d $COORPATH -a $ANNPATH -s $SUF
 ```
 where
@@ -21,14 +21,14 @@ where
 * `SUF`: file suffix
 
 Use the 5kb chromatin tracing data of mESCs ([Huang et al. 2021](https://www.nature.com/articles/s41588-021-00863-6)) as an example:
-```{bash}
+```bash
 mpiexec -np 50 python run_impute.py -o output 
                                     -d data/mESC_Sox2_coor_wnan.txt 
                                     -a data/mESC_Sox2_ann.txt 
                                     -s mESCs_5kb
 ```
 A directory named output with the following files will be generated
-```{bash}
+```bash
 $ tree output
 output/
 ├── linear_coor_mESCs_5kb.txt           # linear imputation output
