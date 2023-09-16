@@ -1,9 +1,10 @@
 from itertools import combinations
 import pandas as pd
 import numpy as np
-from scipy import stats, interpolate
+from scipy import stats, interpolate, signal
 from scipy.spatial.distance import pdist
 from scipy.optimize import minimize
+from skimage import transform
 from sklearn.metrics.pairwise import nan_euclidean_distances
 
 class DistDataFrame(pd.DataFrame):
@@ -57,14 +58,14 @@ class DistDataFrame(pd.DataFrame):
 
 
 def to_dist_mat(d, fill_val=0.0):
-    """convert a 1-D distance vector to matrix
+    """convert a 1-D distance vector to matrix.
 
     Args:
-        d (np.array): 1-D pairwise distances
+        d (np.array): 1-D pairwise distances.
         fill_val (float): values to fill the diagonal. Defaults to 0.0.
 
     Returns:
-        arr: K*K dimension matrix
+        arr: K*K dimension matrix.
     """
     num_ids = int((1 + (1+8*len(d))**0.5)/2)
     id_iter = combinations(np.arange(1, num_ids + 1), 2)
@@ -122,9 +123,82 @@ def to_dist_df(coor_data, ann_df):
     return dist_df
 
 
+def to_triu_indices(n, k):
+    """find the upper triangle indices of an array of square matrices.
+
+    Args:
+        n (int): length in the first dimension.
+        k (int): length in the second and the third dimension.
+
+    Returns:
+        tuple: (idx1, idx2, idx3)
+    """
+    chr_idxs = np.arange(n, dtype="int")
+    tri_idxs1, tri_idxs2 = np.triu_indices(k, 1)
+    return (
+        np.repeat(chr_idxs, tri_idxs1.shape[0]),
+        np.tile(tri_idxs1, chr_idxs.shape[0]),
+        np.tile(tri_idxs2, chr_idxs.shape[0])
+    )
+
+
+def to_mats_single_reg(vec_arr):
+    """convert flattened 1D distance vectors to 2D matrices. The reverse operation of 
+    to_vecs_single_reg.
+
+    Args:
+        vec_arr (np.ndarray): of shape (n, C^k_2), pairwise distances/dissimilarities of a single 
+        imaging region.
+
+    Returns:
+        np.ndarray: of shape (n, k, k)
+    """
+    n = vec_arr.shape[0]
+    k = int((1 + (1+8*vec_arr.shape[1])**0.5)/2)
+    # diagonal and lower left triangle are filled by np.nan
+    mat_arr = np.ones((n, k, k))*np.nan
+    idxs = to_triu_indices(n, k)
+    mat_arr[idxs] = vec_arr.ravel()
+    return mat_arr
+
+
+def to_vecs_single_reg(mat_arr):
+    """roll out the upper triangle of pairwise distances. The reverse operation of 
+    to_mats_single_reg.
+
+    Args:
+        mat_arr (np.ndarray): of shape (n, k, k)
+
+    Returns:
+        np.ndarray: of shape (n, C^k_2)
+    """
+    n, k = mat_arr.shape[:2]
+    idxs = to_triu_indices(n, k)
+    return mat_arr[idxs].reshape((n, -1))
+
+
+def conv_resize(mat, rsize):
+    """smooth and resize a square matrix.
+
+    Args:
+        mat (np.ndarray): k*k matrix.
+        rsize (int, optional): resized factor.
+
+    Returns:
+        np.ndarray: smoothed and resized matrix.
+    """
+    nan_pos = np.isnan(mat)
+    v = np.array([np.where(nan_pos, 0, mat), np.where(nan_pos, 1, 0)])
+    rlv = transform.downscale_local_mean(v, (1, rsize, rsize))
+    rlv[0] = np.where(rlv[1]!=1, rlv[0], np.nan)
+    r = rlv[0]/(1 - rlv[1])
+    np.fill_diagonal(r, np.nan)
+    return r
+
+
 def read_data(path):
-    """read 3D coordinates/pairwise distances files. Convert imaging region
-    and cell ID columns to strings.
+    """read 3D coordinates/pairwise distances files. Convert imaging region and cell ID columns to 
+    strings.
 
     Args:
         path (str): file path.
@@ -140,8 +214,8 @@ def read_data(path):
 
 
 def save_coor(save_coor_df, raw_coor_path, save_path):
-    """save imputed 3D coordinates. Automatically round the 3D coordinates
-    to the precision of the input file.
+    """save imputed 3D coordinates. Automatically round the 3D coordinates to the precision of the 
+    input file.
 
     Args:
         save_coor_df (pd.DataFrame): the dataframe to save.
@@ -158,12 +232,11 @@ def save_coor(save_coor_df, raw_coor_path, save_path):
 
 
 def insert_missing_rows_single_chr(data, ann):
-    """helper method of insert_missing_rows, insert all missing rows of a 
-    single imaging region.
+    """helper method of insert_missing_rows, insert all missing rows of a single imaging region.
 
     Args:
-        data (pd.DataFrame): coordinate df with columns chr, cell_id, pos,
-        x, y, and z of the imaging region.
+        data (pd.DataFrame): coordinate df with columns chr, cell_id, pos, x, y, and z of the 
+        imaging region.
         ann (pd.DataFrame): annotation file of the imaging region.
     """
     CELL_IDS = pd.unique(data["cell_id"])
@@ -194,8 +267,8 @@ def insert_missing_rows(coor_df, ann_df):
     """fill all missing loci by NaN.
 
     Args:
-        coor_df (pd.DataFrame): coordinate df with columns chr, cell_id,
-        pos, x, y, and z of all imaging regions.
+        coor_df (pd.DataFrame): coordinate df with columns chr, cell_id, pos, x, y, and z of all 
+        imaging regions.
         ann_df (pd.DataFrame): annotation file of all imaging regions.
     """
     inserted_ls = []
@@ -208,20 +281,17 @@ def insert_missing_rows(coor_df, ann_df):
 
 
 def interpolate_coors_scipy(ann_df, coor_df, kind):
-    """impute missing 3D coordinates by linear interpolation. The 
-    independent variable is the starting 1D genomic location of each locus.
+    """impute missing 3D coordinates by scipy's interp1d. The independent variable is the starting 
+    1D genomic location of each locus.
 
     Args:
         ann_df (pd.DataFrame): 1D genomic location annotation file.
-        coor_df (pd.DataFrame): 3D coodinates data with missing values as 
-        NaN.
+        coor_df (pd.DataFrame): 3D coodinates data with missing values as NaN.
         Contains chr, cell_id, pos, x, y, and z as columns.
-        kind (str): interpolation method, argument passed to scipy's 
-        interp1d.
+        kind (str): interpolation method, argument passed to scipy's interp1d.
 
     Returns:
-        pd.DataFrame: same shape as coor_df with all missing values filled
-        by linear interpolation result.
+        pd.DataFrame: same shape as coor_df with all missing values filled by scipy's interp1d.
     """
     interp_vals = []
     for (im_id, cell_id), df in coor_df.groupby(["chr", "cell_id"], sort=False):
@@ -244,11 +314,9 @@ def generate_interpolation(ann_path, coor_path, kind, save_path):
 
     Args:
         ann_path (str): path to the 1D genomic location annotation file.
-        coor_path (str): path to the 3D coordinates file. Contains chr, 
-        cell_id, pos, x, y, and z as columns. Missing values are filled by
-        NaN.
-        kind (str): interpolation method, argument passed to scipy's 
-        interp1d.
+        coor_path (str): path to the 3D coordinates file. Contains chr, cell_id, pos, x, y, and z as
+        columns. Missing values are filled by NaN.
+        kind (str): interpolation method, argument passed to scipy's interp1d.
         save_path (str): the path to save the imputation result.
     """
     ann_df = read_data(ann_path)
@@ -279,8 +347,7 @@ def boxcox_by1d(by1d_arr):
 def normalize_pdist_by1d(dist_df):
     """normalize all pairwise distances by 
     For each chr:
-    1) box-cox transformation for each set of bin pairs with the same 1D 
-    genomic distances
+    1) box-cox transformation for each set of bin pairs with the same 1D genomic distances
     2) transform all distributions to N(0,1)
 
     Args:
@@ -310,8 +377,7 @@ def normalize_pdist_by1d(dist_df):
 
 
 def inverse_trf(chr_norm_df):
-    """inverse transformation, N(0,1) -> N(m, s) -> inv_boxcox, can 
-    process multiple imaging regions together.
+    """inverse transformation, N(0,1) -> N(m, s) -> inv_boxcox.
 
     Args:
         chr_norm_df (pd.DataFrame): normalized pairwise distances,
@@ -376,10 +442,9 @@ def filter_by_prop(count_ratio, simil_mat, ratio):
 
 
 def to_simil_mat(pdist_arr, ratio=0.8):
-    """calculate the pairwise similarities from pairwise distances with
-    NaN entries. For any two chromosomes, the similarity between them is 
-    only defined if the number of shared available entries is larger than 
-    ratio% of the number of available entries in at least one chromosome.
+    """calculate the pairwise similarities from pairwise distances with NaN entries. For any two 
+    chromosomes, the similarity between them is only defined if the number of shared available 
+    entries is larger than ratio% of the number of available entries in at least one chromosome.
 
     Args:
         pdist_arr (np.ndarray): N*M normalized pairwise distances.
@@ -528,8 +593,8 @@ def impute_pdist_one_iter(pdist_arr):
 
 
 def count_na_in_pdist(pdist_arr):
-    """count the total number of NaN entries in pairwise distance matrix.
-    Does not count chromosomes with all NaN values.
+    """count the total number of NaN entries in pairwise distance matrix. Does not count chromosomes
+    with all NaN values.
 
     Args:
         pdist_arr (np.ndarray): N*M pairwise distances.
@@ -578,7 +643,7 @@ def loss_pdist(x, raw_coors, mats):
         mats (np.ndarray): 4*K*K, [target, lambda, mu, std].
 
     Returns:
-        float: computed loss
+        float: computed loss.
     """
     upt_coors = raw_coors.copy()
     upt_coors[np.isnan(upt_coors)] = x
