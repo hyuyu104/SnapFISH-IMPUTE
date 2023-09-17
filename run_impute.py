@@ -3,7 +3,7 @@ import argparse
 from sfimpute.parallel import parallel_wrapper
 
 
-def creat_parser():
+def create_parser():
     parser = argparse.ArgumentParser()
     parser.add_argument("-o", "--outdire", action = "store", help = "output directory")
     parser.add_argument("-d", "--coor", action = "store", help = "3D coordinates path")
@@ -13,10 +13,13 @@ def creat_parser():
 
 
 def main():
-    args = creat_parser().parse_args()
+    args = create_parser().parse_args()
     parallel_wrapper(
-        MPI=MPI, output_dire=args.outdire, suf=args.suf,
-        coor_wnan_path=args.coor, ann_path=args.ann,
+        MPI=MPI, 
+        output_dire=args.outdire, 
+        suf=args.suf,
+        coor_wnan_path=args.coor, 
+        ann_path=args.ann,
     )
 
 
