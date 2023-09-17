@@ -31,8 +31,6 @@ A directory named output with the following files will be generated
 ```bash
 $ tree output
 output/
-├── linear_coor_mESCs_5kb.txt           # linear imputation output
-├── recover_coor_mESCs_5kb.txt          # SnapFISH-IMPUTE result
-├── target_dist_mESCs_5kb_reg129.txt    # target pairwise distances for the 129 allele
-└── target_dist_mESCs_5kb_regcast.txt   # target pairwise distances for the CAST allele
+├── linear_coor_mESCs_5kb.txt   # linear imputation output
+└── recover_coor_mESCs_5kb.txt  # SnapFISH-IMPUTE result
 ```
