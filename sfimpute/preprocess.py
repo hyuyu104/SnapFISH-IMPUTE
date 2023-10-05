@@ -150,8 +150,8 @@ def process_mESC_seqFISH_1Mb(jie_dire, mBCC_dire, mESC_dire):
     return coor_path, ann_path
 
 
-def process_mBCC_seqFISH_1Mb(mBCC_dire="data_mBCC_seqFISH"):
-    """process the 1Mb subset from the mouse brain cell dataset. 
+def process_mBCC_seqFISH(resol, mBCC_dire="data_mBCC_seqFISH"):
+    """process the mouse brain cell dataset. 
 
     Args:
         mBCC_dire (str, optional): mouse brain cell data direcctory. Defaults to "data_mBCC_seqFISH".
@@ -159,24 +159,29 @@ def process_mBCC_seqFISH_1Mb(mBCC_dire="data_mBCC_seqFISH"):
     Returns:
         str, str: processed 3D coordinates path, processed 1D annotation file path
     """
-    mBCC_dire = "data_mBCC_seqFISH"
-    coor_path = os.path.join(mBCC_dire, "TableS7_brain_DNAseqFISH_1Mb_voxel_coordinates_2762cells.csv")
-    coor_data = pd.read_csv(coor_path)
+    ann_path = os.path.join(mBCC_dire, "science.abj1966_table_s1.xlsx")
+    if resol == "1Mb":
+        path = "TableS7_brain_DNAseqFISH_1Mb_voxel_coordinates_2762cells.csv"
+        ann = pd.read_excel(ann_path, sheet_name="1-Mb resolution").dropna()
+        pos = np.concatenate(ann.groupby("chromID", sort=False).apply(
+            lambda x: np.arange(1, len(x)+1)
+        ).values)
+        pos_map = pd.Series(pos, index=ann["geneID"])
+    if resol == "25kb":
+        path = "TableS8_brain_DNAseqFISH_25kb_voxel_coordinates_2762cells.csv"
+        ann = pd.read_excel(ann_path, sheet_name="25-kb resolution").dropna()
+    coor_data = pd.read_csv(os.path.join(mBCC_dire, path))
+    ann_processed = mBCC_process_ann(ann)
 
     coor_data = coor_data[coor_data["labelID"] >= 0]
     coor_data["x"] = (coor_data["x"]*103).round(6)
     coor_data["y"] = (coor_data["y"]*103).round(6)
     coor_data["z"] = (coor_data["z"]*250).round(6)
 
-    ann_path = os.path.join(mBCC_dire, "science.abj1966_table_s1.xlsx")
-    ann = pd.read_excel(ann_path, sheet_name="1-Mb resolution").dropna()
-    ann_processed = mBCC_process_ann(ann)
-
-    pos = np.concatenate(ann.groupby("chromID", sort=False).apply(
-        lambda x: np.arange(1, len(x)+1)
-    ).values)
-    pos_map = pd.Series(pos, index=ann["geneID"])
-    coor_data["pos"] = coor_data["geneID"].map(pos_map)
+    if "geneID" in coor_data.columns:
+        coor_data["pos"] = coor_data["geneID"].map(pos_map)
+    else:
+        coor_data["pos"] = coor_data["regionID_chrom"]
     coor_data = coor_data.drop("rep", axis=1).rename({
         "replicateID":"rep", "cluster label":"cluster", "chromID":"chr"
     }, axis=1)
@@ -198,9 +203,9 @@ def process_mBCC_seqFISH_1Mb(mBCC_dire="data_mBCC_seqFISH"):
     kept_rows["cell_id"] = chr_id
     data = kept_rows[["chr", "cell_id", "pos", "x", "y", "z", "cluster"]]
 
-    coor_path = os.path.join(mBCC_dire, "mBCC_seqFISH_1Mb_coor.txt")
+    coor_path = os.path.join(mBCC_dire, f"mBCC_seqFISH_{resol}_coor.txt")
     data.to_csv(coor_path, index=False, sep="\t")
-    ann_path = os.path.join(mBCC_dire, "mBCC_seqFISH_1Mb_ann.txt")
+    ann_path = os.path.join(mBCC_dire, f"mBCC_seqFISH_{resol}_ann.txt")
     ann_processed.to_csv(ann_path, index=False, sep="\t")
     return coor_path, ann_path
 
@@ -297,12 +302,13 @@ def process_all(
     coor_path, ann_path = process_mESC_seqFISH_1Mb(jie_subdire, mBCC_dire, mESC_dire)
     insert_nan_to_coor(coor_path, ann_path)
 
-    coor_path, ann_path = process_mBCC_seqFISH_1Mb()
-    insert_nan_to_coor(coor_path, ann_path)
-
-    mbcc_wnan_coor_path = "data_mBCC_seqFISH/mBCC_seqFISH_1Mb_coor_wnan.txt"
-    data = pd.read_csv(mbcc_wnan_coor_path, sep="\t")
-    cell_cluster = data.dropna()[["cell_id", "cluster"]].drop_duplicates()
-    cluster_map = pd.Series(cell_cluster["cluster"].values, index=cell_cluster["cell_id"])
-    data["cluster"] = data["cell_id"].map(cluster_map).astype("int")
-    data.round(6).to_csv(mbcc_wnan_coor_path, sep="\t", index=False)
+    for resol in ["1Mb", "25kb"]:
+        coor_path, ann_path = process_mBCC_seqFISH(resol, mBCC_dire)
+        insert_nan_to_coor(coor_path, ann_path)
+        mbcc_wnan_coor_path = os.path.join(mBCC_dire, f"mBCC_seqFISH_{resol}_coor_wnan.txt")
+        data = pd.read_csv(mbcc_wnan_coor_path, sep="\t")
+        
+        cell_cluster = data.dropna()[["cell_id", "cluster"]].drop_duplicates()
+        cluster_map = pd.Series(cell_cluster["cluster"].values, index=cell_cluster["cell_id"])
+        data["cluster"] = data["cell_id"].map(cluster_map).astype("int")
+        data.round(6).to_csv(mbcc_wnan_coor_path, sep="\t", index=False)
