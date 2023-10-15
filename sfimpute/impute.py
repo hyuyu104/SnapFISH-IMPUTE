@@ -1,14 +1,16 @@
 from itertools import combinations
 import pandas as pd
 import numpy as np
-from scipy import stats, interpolate, signal
+from scipy import stats, interpolate
 from scipy.spatial.distance import pdist
 from scipy.optimize import minimize
 from skimage import transform
 from sklearn.metrics.pairwise import nan_euclidean_distances
 
+
 class DistDataFrame(pd.DataFrame):
     """extends pd.DataFrame to store pairwise distances."""
+
     def __init__(self, *args, **kwargs):
         """initialize a DistDataFrame. Convert all column names to str."""
         super().__init__(*args, **kwargs)
@@ -67,14 +69,19 @@ def to_dist_mat(d, fill_val=0.0):
     Returns:
         arr: K*K dimension matrix.
     """
-    num_ids = int((1 + (1+8*len(d))**0.5)/2)
+    num_ids = int((1 + (1 + 8 * len(d)) ** 0.5) / 2)
     id_iter = combinations(np.arange(1, num_ids + 1), 2)
     mat_df = pd.DataFrame(list(id_iter), columns=["id1", "id2"])
     mat_df["d"] = d
     dist_vals = pd.pivot_table(mat_df, "d", "id1", "id2", dropna=False).values
-    dist_mat = np.diag([fill_val]*num_ids)
-    dist_mat[np.triu_indices(num_ids, 1)] = dist_vals[np.triu_indices_from(dist_vals)]
-    dist_mat[np.tril_indices(num_ids, -1)] = dist_vals.T[np.tril_indices_from(dist_vals)]
+    dist_mat = np.diag([fill_val] * num_ids)
+
+    uids = np.triu_indices(num_ids, 1)
+    lids = np.tril_indices(num_ids, -1)
+    fids = np.triu_indices_from(dist_vals)
+
+    dist_mat[uids] = dist_vals[fids]
+    dist_mat[lids] = dist_vals.T[fids]
     return dist_mat
 
 
@@ -89,37 +96,44 @@ def to_dist_df(coor_data, ann_df):
     Returns:
         pd.DataFrame: (chr*M)*(5+N).
     """
-    coor_dists = coor_data.groupby(
-        ["chr", "cell_id"], sort=False
-    ).apply(
+    coor_dists = coor_data.groupby(["chr", "cell_id"], sort=False).apply(
         lambda x: pdist(x[["x", "y", "z"]])
     )
 
     dist_df_ls = []
     for c, sub_ann_df in ann_df.groupby("chr", sort=False):
         single_chr_dists = np.stack(coor_dists[c].values).T
-        sub_dist_df = pd.DataFrame(single_chr_dists, columns=coor_dists[c].index)
+        sub_dist_df = pd.DataFrame(
+            single_chr_dists, columns=coor_dists[c].index
+        )
 
-        ann_comb = combinations(sub_ann_df[["pos", "start"]].values, 2)
-        bin_cols = np.stack(list(ann_comb)).reshape((-1,4))
-        sub_bin_df = pd.DataFrame(bin_cols, columns=["bin1", "x1", "bin2", "y1"])
+        comb_cols = sub_ann_df[["pos", "start"]].values
+        ann_comb = list(combinations(comb_cols, 2))
+        bin_cols = np.stack(ann_comb).reshape((-1, 4))
+        sub_bin_df = pd.DataFrame(
+            bin_cols, columns=["bin1", "x1", "bin2", "y1"]
+        )
         sub_bin_df.insert(0, "chr", c)
 
-        dist_df_ls.append(pd.concat([sub_bin_df, sub_dist_df], axis=1, sort=False))
+        dist_df_ls.append(
+            pd.concat([sub_bin_df, sub_dist_df], axis=1, sort=False)
+        )
 
     dist_df = pd.concat(dist_df_ls, axis=0, sort=False)
     cell_ids = pd.unique(coor_data["cell_id"]).tolist()
-    sorted_cols = dist_df.columns[:sub_bin_df.shape[1]].tolist() + cell_ids
-    dist_df = DistDataFrame(dist_df.loc[:,sorted_cols])
-    dist_df.insert(
-        len(dist_df.kcol()), 
-        "y-x",
-        dist_df["y1"]-dist_df["x1"]
-    )
+
+    sorted_cols = dist_df.columns[: sub_bin_df.shape[1]].tolist() + cell_ids
+    dist_df = DistDataFrame(dist_df.loc[:, sorted_cols])
+    dist1d = dist_df["y1"] - dist_df["x1"]
+    dist_df.insert(len(dist_df.kcol()), "y-x", dist1d)
+
     start1d = ann_df["start"]
+    # take the median of all 1D distance between consecutive loci
     median = np.nanmedian(start1d - start1d.shift())
+    # the bin size to do normalization
     median = round(median, 2 - len(str(int(median))))
-    dist_df["y-x"] = (dist_df["y-x"]//median * median).astype("int")
+    dist_df["y-x"] = (dist_df["y-x"] // median * median).astype("int")
+
     return dist_df
 
 
@@ -138,33 +152,35 @@ def to_triu_indices(n, k):
     return (
         np.repeat(chr_idxs, tri_idxs1.shape[0]),
         np.tile(tri_idxs1, chr_idxs.shape[0]),
-        np.tile(tri_idxs2, chr_idxs.shape[0])
+        np.tile(tri_idxs2, chr_idxs.shape[0]),
     )
 
 
 def to_mats_single_reg(vec_arr):
-    """convert flattened 1D distance vectors to 2D matrices. The reverse operation of 
-    to_vecs_single_reg.
+    """convert flattened 1D distance vectors to 2D matrices. The reverse
+    operation of to_vecs_single_reg.
 
     Args:
-        vec_arr (np.ndarray): of shape (n, C^k_2), pairwise distances/dissimilarities of a single 
-        imaging region.
+        vec_arr (np.ndarray): of shape (n, C^k_2), pairwise distances/
+        dissimilarities of a single imaging region.
 
     Returns:
         np.ndarray: of shape (n, k, k)
     """
     n = vec_arr.shape[0]
-    k = int((1 + (1+8*vec_arr.shape[1])**0.5)/2)
+    k = int((1 + (1 + 8 * vec_arr.shape[1]) ** 0.5) / 2)
     # diagonal and lower left triangle are filled by np.nan
-    mat_arr = np.ones((n, k, k))*np.nan
+    mat_arr = np.ones((n, k, k)) * np.nan
+
     idxs = to_triu_indices(n, k)
     mat_arr[idxs] = vec_arr.ravel()
+
     return mat_arr
 
 
 def to_vecs_single_reg(mat_arr):
-    """roll out the upper triangle of pairwise distances. The reverse operation of 
-    to_mats_single_reg.
+    """roll out the upper triangle of pairwise distances. The reverse operation
+    of to_mats_single_reg.
 
     Args:
         mat_arr (np.ndarray): of shape (n, k, k)
@@ -188,17 +204,21 @@ def conv_resize(mat, rsize):
         np.ndarray: smoothed and resized matrix.
     """
     nan_pos = np.isnan(mat)
-    v = np.array([np.where(nan_pos, 0, mat), np.where(nan_pos, 1, 0)])
+    no_nanval = np.where(nan_pos, 0, mat)
+    nan_mat = np.where(nan_pos, 1, 0)
+    v = np.array([no_nanval, nan_mat])
+
     rlv = transform.downscale_local_mean(v, (1, rsize, rsize))
-    rlv[0] = np.where(rlv[1]!=1, rlv[0], np.nan)
-    r = rlv[0]/(1 - rlv[1])
+    rlv[0] = np.where(rlv[1] != 1, rlv[0], np.nan)
+    r = rlv[0] / (1 - rlv[1])
+
     np.fill_diagonal(r, np.nan)
     return r
 
 
 def read_data(path):
-    """read 3D coordinates/pairwise distances files. Convert imaging region and cell ID columns to 
-    strings.
+    """read 3D coordinates/pairwise distances files. Convert imaging region
+    and cell ID columns to strings.
 
     Args:
         path (str): file path.
@@ -206,16 +226,18 @@ def read_data(path):
     Returns:
         pd.DataFrame: data read from the file path.
     """
-    dtype_dict = {"chr":"str", "cell_id":"str", "pos":"int"}
+    dtype_dict = {"chr": "str", "cell_id": "str", "pos": "int"}
     data = pd.read_csv(path, sep="\t")
-    shared_type = {k:v for k,v in dtype_dict.items() if k in data.columns}
+
+    shared_type = {k: v for k, v in dtype_dict.items() if k in data.columns}
     data = data.astype(shared_type)
+
     return data
 
 
 def save_coor(save_coor_df, raw_coor_path, save_path):
-    """save imputed 3D coordinates. Automatically round the 3D coordinates to the precision of the 
-    input file.
+    """save imputed 3D coordinates. Automatically round the 3D coordinates
+    to the precision of the input file.
 
     Args:
         save_coor_df (pd.DataFrame): the dataframe to save.
@@ -227,37 +249,39 @@ def save_coor(save_coor_df, raw_coor_path, save_path):
         str_col = raw_as_str[coor_name].astype("str")
         precs = str_col.str.replace(r"^[^\.]+\.?", "").str.len()
         prec = np.max(precs)
+
         save_coor_df[coor_name] = save_coor_df[coor_name].round(prec)
+
     save_coor_df.to_csv(save_path, sep="\t", index=False)
 
 
 def insert_missing_rows_single_chr(data, ann):
-    """helper method of insert_missing_rows, insert all missing rows of a single imaging region.
+    """helper method of insert_missing_rows, insert all missing rows of a
+    single imaging region.
 
     Args:
-        data (pd.DataFrame): coordinate df with columns chr, cell_id, pos, x, y, and z of the 
-        imaging region.
+        data (pd.DataFrame): coordinate df with columns
+            chr, cell_id, pos, x, y, and z of the imaging region.
         ann (pd.DataFrame): annotation file of the imaging region.
     """
-    CELL_IDS = pd.unique(data["cell_id"])
-    NUM_POS = ann.shape[0]
+    chr_ids = pd.unique(data["cell_id"])
+    pos_count = ann.shape[0]
 
-    cell_ids = np.repeat(CELL_IDS, NUM_POS)
-    pos_ids = np.tile(ann["pos"], len(CELL_IDS))
+    cell_ids = np.repeat(chr_ids, pos_count)
+    pos_ids = np.tile(ann["pos"], len(chr_ids))
+
     full_rids = set(zip(cell_ids, pos_ids))
     raw_rids = set(zip(data["cell_id"], data["pos"]))
     # expected (cell id, locus id) - observed (cell id, locus id)
     missed_rows = full_rids - raw_rids
-    
+
     if len(missed_rows) != 0:
         missed_rows = np.array(list(missed_rows))
-        missed_df = pd.DataFrame(
-            missed_rows, 
-            columns=["cell_id", "pos"]
-        )
+        missed_df = pd.DataFrame(missed_rows, columns=["cell_id", "pos"])
+
         missed_df["pos"] = missed_df["pos"].astype("int")
         data = pd.concat([data, missed_df], sort=False)
-    
+
     # insert all missing cell id and locus id
     data = data.sort_values(["cell_id", "pos"])
     return data.reset_index(drop=True)
@@ -267,45 +291,53 @@ def insert_missing_rows(coor_df, ann_df):
     """fill all missing loci by NaN.
 
     Args:
-        coor_df (pd.DataFrame): coordinate df with columns chr, cell_id, pos, x, y, and z of all 
-        imaging regions.
+        coor_df (pd.DataFrame): coordinate df with columns
+            chr, cell_id, pos, x, y, and z of all imaging regions.
         ann_df (pd.DataFrame): annotation file of all imaging regions.
     """
     inserted_ls = []
     for im_id, data in coor_df.groupby("chr", sort=False):
-        ann = ann_df[ann_df["chr"]==im_id]
+        ann = ann_df[ann_df["chr"] == im_id]
         sub_df = insert_missing_rows_single_chr(data, ann)
+
         sub_df["chr"] = im_id
         inserted_ls.append(sub_df)
+
     return pd.concat(inserted_ls, sort=False)
 
 
 def interpolate_coors_scipy(ann_df, coor_df, kind):
-    """impute missing 3D coordinates by scipy's interp1d. The independent variable is the starting 
-    1D genomic location of each locus.
+    """impute missing 3D coordinates by scipy's interp1d. The independent
+    variable is the starting 1D genomic location of each locus.
 
     Args:
         ann_df (pd.DataFrame): 1D genomic location annotation file.
         coor_df (pd.DataFrame): 3D coodinates data with missing values as NaN.
-        Contains chr, cell_id, pos, x, y, and z as columns.
+            Contains chr, cell_id, pos, x, y, and z as columns.
         kind (str): interpolation method, argument passed to scipy's interp1d.
 
     Returns:
-        pd.DataFrame: same shape as coor_df with all missing values filled by scipy's interp1d.
+        pd.DataFrame: same shape as coor_df with all missing values filled
+            by scipy's interp1d.
     """
     interp_vals = []
-    for (im_id, cell_id), df in coor_df.groupby(["chr", "cell_id"], sort=False):
-        x = ann_df[ann_df["chr"]==im_id]["start"].values
+    for (im_id, _), df in coor_df.groupby(["chr", "cell_id"], sort=False):
+        x = ann_df[ann_df["chr"] == im_id]["start"].values
         y = df[["x", "y", "z"]].values
         nan_filter = ~np.isnan(y[:, 0])
         interp_fxn = interpolate.interp1d(
-            x[nan_filter], y[nan_filter, :], axis=0,
-            kind=kind, fill_value="extrapolate"
+            x[nan_filter],
+            y[nan_filter, :],
+            axis=0,
+            kind=kind,
+            fill_value="extrapolate",
         )
         interp_vals.append(interp_fxn(x))
+
     interp_vals = np.concatenate(interp_vals)
     interp_coor_df = coor_df.copy()
     interp_coor_df[["x", "y", "z"]] = interp_vals
+
     return interp_coor_df
 
 
@@ -314,8 +346,9 @@ def generate_interpolation(ann_path, coor_path, kind, save_path):
 
     Args:
         ann_path (str): path to the 1D genomic location annotation file.
-        coor_path (str): path to the 3D coordinates file. Contains chr, cell_id, pos, x, y, and z as
-        columns. Missing values are filled by NaN.
+        coor_path (str): path to the 3D coordinates file. Contains
+            chr, cell_id, pos, x, y, and z as columns.
+            Missing values are filled by NaN.
         kind (str): interpolation method, argument passed to scipy's interp1d.
         save_path (str): the path to save the imputation result.
     """
@@ -338,16 +371,19 @@ def boxcox_by1d(by1d_arr):
     y = by1d_arr[~np.isnan(by1d_arr)]
     lmbda = round(stats.boxcox_normmax(y, method="mle"), 4)
     y_trf = stats.boxcox(y, lmbda=lmbda)
+
     mu, var = np.mean(y_trf), np.var(y_trf)
-    by1d_arr[~np.isnan(by1d_arr)] = (y_trf - mu)/(var**0.5)
+    by1d_arr[~np.isnan(by1d_arr)] = (y_trf - mu) / (var**0.5)
     trf_vals = np.tile([lmbda, mu, var], by1d_arr.shape[0]).reshape(-1, 3)
+
     return by1d_arr, trf_vals
 
 
 def normalize_pdist_by1d(dist_df):
-    """normalize all pairwise distances by 
+    """normalize all pairwise distances by
     For each chr:
-    1) box-cox transformation for each set of bin pairs with the same 1D genomic distances
+    1) box-cox transformation for each set of bin pairs with the same
+    1D genomic distances
     2) transform all distributions to N(0,1)
 
     Args:
@@ -358,7 +394,6 @@ def normalize_pdist_by1d(dist_df):
     """
     dist_df_ls = []
     for c, sub_dist_df in dist_df.groupby("chr", sort=False):
-
         kcol_ls, norm_pdists, trf_val_ls = [], [], []
         for d, df in sub_dist_df.groupby("y-x", sort=False):
             by1d_arr, trf_vals = boxcox_by1d(df.to_darr())
@@ -367,12 +402,18 @@ def normalize_pdist_by1d(dist_df):
             trf_val_ls.append(trf_vals)
 
         kcols = pd.concat(kcol_ls, sort=False, ignore_index=True)
-        norm_pdists = pd.DataFrame(np.concatenate(norm_pdists), columns=sub_dist_df.vcol())
-        trf_vals = pd.DataFrame(np.concatenate(trf_val_ls), columns=["lmbda", "mu", "var"])
-        n_df = DistDataFrame(pd.concat([kcols, trf_vals, norm_pdists], sort=False, axis=1))
+        norm_pdists = pd.DataFrame(
+            np.concatenate(norm_pdists), columns=sub_dist_df.vcol()
+        )
+        trf_vals = pd.DataFrame(
+            np.concatenate(trf_val_ls), columns=["lmbda", "mu", "var"]
+        )
+        n_df = DistDataFrame(
+            pd.concat([kcols, trf_vals, norm_pdists], sort=False, axis=1)
+        )
         n_df = n_df.sort_values(["bin1", "bin2"])
         dist_df_ls.append(n_df)
-        
+
     return pd.concat(dist_df_ls, ignore_index=True, sort=False)
 
 
@@ -390,8 +431,8 @@ def inverse_trf(chr_norm_df):
     target_mat = chr_norm_df.to_darr()
     l, m, v = np.expand_dims(chr_norm_df[["lmbda", "mu", "var"]].values.T, 2)
 
-    lne0 = np.exp(np.log((target_mat*np.sqrt(v) + m)*l + 1)/l)
-    le0 = np.exp(target_mat*np.sqrt(v) + m)
+    lne0 = np.exp(np.log((target_mat * np.sqrt(v) + m) * l + 1) / l)
+    le0 = np.exp(target_mat * np.sqrt(v) + m)
     l_filter = np.repeat(l, target_mat.shape[1], axis=1) == 0
 
     target_mat_trf = np.where(l_filter, le0, lne0)
@@ -411,18 +452,18 @@ def to_simil_mat_row(pdist_arr, i):
         np.ndarray: 2*N, dissimil_raw, count_ratio
     """
     num_chrs = pdist_arr.shape[0]
-    tiled_dist = np.tile(pdist_arr[i,None].T, num_chrs).T
+    tiled_dist = np.tile(pdist_arr[i, None].T, num_chrs).T
     diff = tiled_dist - pdist_arr
     eucl_dist = np.sqrt(np.nansum(np.square(diff), axis=1))
     share_count = np.sum(~np.isnan(diff), axis=1)
-    dissimil_raw = eucl_dist/np.sqrt(share_count)
+    dissimil_raw = eucl_dist / np.sqrt(share_count)
 
     by_chr_count = np.sum(~np.isnan(pdist_arr), axis=1)
     min1 = by_chr_count[i]
-    min_count = np.where(min1>by_chr_count, by_chr_count, min1)
-    count_ratio = share_count/min_count
+    min_count = np.where(min1 > by_chr_count, by_chr_count, min1)
+    count_ratio = share_count / min_count
     return np.stack([dissimil_raw, count_ratio])
-    
+
 
 def filter_by_prop(count_ratio, simil_mat, ratio):
     """filter pairwise dissimilarities by NaN proportions.
@@ -442,9 +483,11 @@ def filter_by_prop(count_ratio, simil_mat, ratio):
 
 
 def to_simil_mat(pdist_arr, ratio=0.8):
-    """calculate the pairwise similarities from pairwise distances with NaN entries. For any two 
-    chromosomes, the similarity between them is only defined if the number of shared available 
-    entries is larger than ratio% of the number of available entries in at least one chromosome.
+    """calculate the pairwise similarities from pairwise distances
+    with NaN entries. For any two chromosomes, the similarity between
+    them is only defined if the number of shared available entries is
+    larger than ratio% of the number of available entries in at least
+    one chromosome.
 
     Args:
         pdist_arr (np.ndarray): N*M normalized pairwise distances.
@@ -455,11 +498,11 @@ def to_simil_mat(pdist_arr, ratio=0.8):
     """
     count_iter = combinations(np.sum(~np.isnan(pdist_arr), axis=1), 2)
     min_count = np.min(np.array(list(count_iter)), axis=1)
-    share_count = pdist(~np.isnan(pdist_arr), lambda u,v: np.sum(u&v))
-    count_ratio = to_dist_mat(share_count/min_count)
+    share_count = pdist(~np.isnan(pdist_arr), lambda u, v: np.sum(u & v))
+    count_ratio = to_dist_mat(share_count / min_count)
 
     simil_mat = nan_euclidean_distances(pdist_arr)
-    simil_mat = simil_mat/(pdist_arr.shape[1]**0.5)
+    simil_mat = simil_mat / (pdist_arr.shape[1] ** 0.5)
 
     return filter_by_prop(count_ratio, simil_mat, ratio)
 
@@ -475,7 +518,9 @@ def scatter_row_idxs(comm, nrows, MPI):
     if comm.rank == 0:
         row_idxs = np.arange(nrows, dtype="int64")
         ave, res = divmod(nrows, comm.size)
-        count = np.array([ave+1 if p < res else ave for p in range(comm.size)])
+        count = np.array(
+            [ave + 1 if p < res else ave for p in range(comm.size)]
+        )
         index = np.array([sum(count[:p]) for p in range(comm.size)])
     else:
         count = np.zeros(comm.size, dtype="int")
@@ -484,9 +529,7 @@ def scatter_row_idxs(comm, nrows, MPI):
     comm.Bcast(count, root=0)
     comm.Bcast(index, root=0)
     rows_assigned = np.zeros(count[comm.rank], dtype="int64")
-    comm.Scatterv([
-        row_idxs, count, index, MPI.LONG
-    ], rows_assigned, root=0)
+    comm.Scatterv([row_idxs, count, index, MPI.LONG], rows_assigned, root=0)
     return rows_assigned, count, index
 
 
@@ -501,18 +544,28 @@ def simil_mat_parallel(pdist_arr, MPI):
         np.ndarray: N*N filtered pairwise dissimilarities.
     """
     comm = MPI.COMM_WORLD
-    rows_assigned, count, index = scatter_row_idxs(comm, pdist_arr.shape[0], MPI)
+    rows_assigned, count, index = scatter_row_idxs(
+        comm, pdist_arr.shape[0], MPI
+    )
 
     rows = np.stack([to_simil_mat_row(pdist_arr, i) for i in rows_assigned])
-    simil_rows, count_rows = rows[:,0,:].ravel("C"), rows[:,1,:].ravel("C")
+    simil_rows, count_rows = rows[:, 0, :].ravel("C"), rows[:, 1, :].ravel("C")
 
     nchrs = pdist_arr.shape[0]
     simil_all = np.zeros(nchrs**2, dtype="float64")
-    comm.Gatherv(simil_rows, [simil_all, count*nchrs, index*nchrs, MPI.DOUBLE], root=0)
+    comm.Gatherv(
+        simil_rows,
+        [simil_all, count * nchrs, index * nchrs, MPI.DOUBLE],
+        root=0,
+    )
     simil_all = simil_all.reshape(nchrs, nchrs)
 
     count_all = np.zeros(nchrs**2, dtype="float64")
-    comm.Gatherv(count_rows, [count_all, count*nchrs, index*nchrs, MPI.DOUBLE], root=0)
+    comm.Gatherv(
+        count_rows,
+        [count_all, count * nchrs, index * nchrs, MPI.DOUBLE],
+        root=0,
+    )
     count_all = count_all.reshape(nchrs, nchrs)
 
     if comm.rank == 0:
@@ -524,7 +577,8 @@ def simil_mat_parallel(pdist_arr, MPI):
 
 
 def to_target_single_chr(pdist_arr, wr):
-    """calculate the target distance matrix for a given chromosome based on a nn nearest entries.
+    """calculate the target distance matrix for a given chromosome
+    based on a nn nearest entries.
 
     Args:
         pdist_arr (np.ndarray): N*M matrix of normalized pairwise distances.
@@ -538,13 +592,13 @@ def to_target_single_chr(pdist_arr, wr):
 
     thresh = -np.sort(-expanded_weight, axis=1)[:, 1]
     expanded_weight[expanded_weight <= thresh[:, None]] = 0
-    weight = expanded_weight/expanded_weight.sum(axis=1)[:, None]
+    weight = expanded_weight / expanded_weight.sum(axis=1)[:, None]
 
     pdists_wo_nan = np.where(np.isnan(pdist_arr), 0, pdist_arr)
-    target = (weight*pdists_wo_nan.T).sum(-1)
+    target = (weight * pdists_wo_nan.T).sum(-1)
 
     # entries where all cells with positive weights are NaN
-    target[target==0] = np.nan
+    target[target == 0] = np.nan
     return target
 
 
@@ -560,16 +614,17 @@ def to_target_parallel(pdist_arr, dissimil_mat, MPI):
         np.ndarray: N*M filled normalized pairwise distances.
     """
     comm = MPI.COMM_WORLD
-    W = np.where(np.isnan(dissimil_mat), 0, 1/dissimil_mat)
+    W = np.where(np.isnan(dissimil_mat), 0, 1 / dissimil_mat)
     rows_assigned, count, index = scatter_row_idxs(comm, W.shape[0], MPI)
-    pdists = np.array([
-        to_target_single_chr(pdist_arr, W[i])
-        for i in rows_assigned
-    ]).ravel("C")
+    pdists = np.array(
+        [to_target_single_chr(pdist_arr, W[i]) for i in rows_assigned]
+    ).ravel("C")
 
     target_pdists = np.zeros(pdist_arr.size, dtype="float64")
     n = pdist_arr.shape[1]
-    comm.Gatherv(pdists, [target_pdists, count*n, index*n, MPI.DOUBLE], root=0)
+    comm.Gatherv(
+        pdists, [target_pdists, count * n, index * n, MPI.DOUBLE], root=0
+    )
     target_pdists = target_pdists.reshape(pdist_arr.shape)
     comm.Bcast(target_pdists, root=0)
     return target_pdists
@@ -587,14 +642,14 @@ def impute_pdist_one_iter(pdist_arr):
         np.ndarray, int: N*M predicted values and kernel size.
     """
     simil_mat = to_simil_mat(pdist_arr, ratio=0.8)
-    W = np.where(np.isnan(simil_mat), 0, 1/simil_mat)
+    W = np.where(np.isnan(simil_mat), 0, 1 / simil_mat)
     target_pdists = np.array([to_target_single_chr(pdist_arr, w) for w in W])
     return target_pdists
 
 
 def count_na_in_pdist(pdist_arr):
-    """count the total number of NaN entries in pairwise distance matrix. Does not count chromosomes
-    with all NaN values.
+    """count the total number of NaN entries in pairwise distance
+    matrix. Does not count chromosomes with all NaN values.
 
     Args:
         pdist_arr (np.ndarray): N*M pairwise distances.
@@ -635,7 +690,7 @@ def generate_single_reg_target(reg_norm_df, save_path):
 
 
 def loss_pdist(x, raw_coors, mats):
-    """computes the loss by summing the squared difference of pairwise distances. 
+    """computes the loss by summing the squared difference of pairwise distances.
 
     Args:
         x (np.array): flattend updated 3D coordinates.
@@ -650,8 +705,8 @@ def loss_pdist(x, raw_coors, mats):
     upt_pdist = to_dist_mat(pdist(upt_coors), np.nan)
 
     # transformed the distances by box-cox and normalization
-    trf_upt_pdist = (np.power(upt_pdist, mats[1]) - 1)/mats[1]
-    trf_upt_pdist = (trf_upt_pdist - mats[2])/mats[3]
+    trf_upt_pdist = (np.power(upt_pdist, mats[1]) - 1) / mats[1]
+    trf_upt_pdist = (trf_upt_pdist - mats[2]) / mats[3]
 
     # return the sum of squares
     return np.nansum(np.square(trf_upt_pdist - mats[0]))
@@ -673,25 +728,25 @@ def jac_pdist(x, raw_coors, mats):
     upt_pdist = to_dist_mat(pdist(upt_coors), np.nan)
 
     # transformed the distances by box-cox and normalization
-    trf_upt_pdist = (np.power(upt_pdist, mats[1]) - 1)/mats[1]
-    trf_upt_pdist = (trf_upt_pdist - mats[2])/mats[3]
+    trf_upt_pdist = (np.power(upt_pdist, mats[1]) - 1) / mats[1]
+    trf_upt_pdist = (trf_upt_pdist - mats[2]) / mats[3]
 
     # the second part of the Jacobian
-    prod_part = np.power(upt_pdist, mats[1]-2)*(trf_upt_pdist - mats[0])
-    prod_part = prod_part*2/mats[3]
+    prod_part = np.power(upt_pdist, mats[1] - 2) * (trf_upt_pdist - mats[0])
+    prod_part = prod_part * 2 / mats[3]
 
     num_bins = upt_coors.shape[0]
     # expand the 3D coordinates to 3*K*K to compute pairwise differences
     upt_expand = np.repeat(upt_coors.T, num_bins).reshape((3, num_bins, -1))
-    coor_diff = (upt_expand.transpose((0, 2, 1)) - upt_coors.T[:,:,None])
+    coor_diff = upt_expand.transpose((0, 2, 1)) - upt_coors.T[:, :, None]
 
-    jac = np.nansum(coor_diff*prod_part[None,:,:], axis=1).T
+    jac = np.nansum(coor_diff * prod_part[None, :, :], axis=1).T
     return jac[np.isnan(raw_coors)]
 
 
 def recover_3d_coor_single_chr(raw, lnr, fla_mat, trf):
-    """recover the 3D coordinates based on a target pairwise distance matrix, use the transformed 
-    loss.
+    """recover the 3D coordinates based on a target pairwise
+    distance matrix, use the transformed loss.
 
     Args:
         raw (array): K*3, with NaN values.
@@ -704,14 +759,17 @@ def recover_3d_coor_single_chr(raw, lnr, fla_mat, trf):
     """
     upt = raw.copy()
     mats = np.stack([to_dist_mat(m, np.nan) for m in [fla_mat, *trf.T]])
-    mats[1] = np.where(mats[1]==0, 1e-4, mats[1])
+    mats[1] = np.where(mats[1] == 0, 1e-4, mats[1])
     mats[3] = np.sqrt(mats[3])
     x = lnr[np.isnan(raw)]
     if x.size > 0:
         upt[np.isnan(upt)] = minimize(
-            loss_pdist, x, args=(raw, mats),
-            method="L-BFGS-B", jac=jac_pdist, 
-            options={"disp":False}, 
+            loss_pdist,
+            x,
+            args=(raw, mats),
+            method="L-BFGS-B",
+            jac=jac_pdist,
+            options={"disp": False},
         ).x
         # set bins with no available target dists to NaN
         target_nan = np.sum(np.isnan(mats[0]), axis=1)

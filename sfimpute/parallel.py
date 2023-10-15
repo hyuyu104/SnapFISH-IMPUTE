@@ -4,13 +4,7 @@ import numpy as np
 from .impute import *
 
 
-def generate_single_reg_parallel(
-        MPI,
-        reg_coor_data, 
-        reg_ann_df, 
-        reg_id, 
-        target_fpath
-):
+def generate_single_reg_parallel(MPI, reg_coor_data, reg_ann_df, reg_id, target_fpath):
     """impute the normalized pairwise distances of an imaging region.
 
     Args:
@@ -30,7 +24,16 @@ def generate_single_reg_parallel(
     if comm.rank == 0:
         print(f"Region {reg_id} initial: {curr_na} NaN values")
     while prev_na != curr_na and curr_na != 0:
-        dissimil_mat = simil_mat_parallel(pdist_arr, MPI)
+        mat_arr = to_mats_single_reg(pdist_arr)
+
+        r = int(np.floor(reg_ann_df["pos"].max() / 20))
+        if comm.rank == 0:
+            print(f"region {reg_id} resized by a factor of", r)
+
+        resized = np.stack([conv_resize(t, r) for t in mat_arr])
+        resized = to_vecs_single_reg(resized)
+        dissimil_mat = simil_mat_parallel(resized, MPI)
+
         P = to_target_parallel(pdist_arr, dissimil_mat, MPI)
         pdist_arr = np.where(np.isnan(pdist_arr), P, pdist_arr)
         prev_na = curr_na
@@ -46,11 +49,11 @@ def generate_single_reg_parallel(
 
 
 def parallel_dist_mat(
-        MPI,
-        output_dire,
-        suf,
-        coor_wnan_path,
-        ann_path,
+    MPI,
+    output_dire,
+    suf,
+    coor_wnan_path,
+    ann_path,
 ):
     """impute normalize distances of all imaging regions.
 
@@ -74,31 +77,28 @@ def parallel_dist_mat(
     np.seterr(divide="ignore", invalid="ignore")
     for reg_id in pd.unique(coor_data["chr"]):
         generate_single_reg_parallel(
-            reg_coor_data=coor_data[coor_data["chr"]==reg_id],
-            reg_ann_df=ann_df[ann_df["chr"]==reg_id],
-            reg_id=reg_id, target_fpath=target_fpath, MPI=MPI
+            reg_coor_data=coor_data[coor_data["chr"] == reg_id],
+            reg_ann_df=ann_df[ann_df["chr"] == reg_id],
+            reg_id=reg_id,
+            target_fpath=target_fpath,
+            MPI=MPI,
         )
-    comm.Barrier() # ensures that all targets are generated
+    comm.Barrier()  # ensures that all targets are generated
     np.seterr(divide="warn", invalid="warn")
 
     return target_fpath
 
 
 def parallel_single_recover(
-        MPI, 
-        coor_wnan_path, 
-        lnr_path, 
-        reg_target_path, 
-        reg_id, 
-        recover_fpath
+    MPI, coor_wnan_path, lnr_path, reg_target_path, reg_id, recover_fpath
 ):
-    """recover the 3D coordinates of a single genomic region by distributing chromosomes to 
+    """recover the 3D coordinates of a single genomic region by distributing chromosomes to
     different processes and run parallelly.
 
     Args:
         MPI (MPI): MPI object.
         coor_wnan_path (str): path to the 3D coordinates, missing values are replaced by NaN.
-        lnr_path (str): (N*K)*3, path to linear imputed 3D coordinates, 
+        lnr_path (str): (N*K)*3, path to linear imputed 3D coordinates,
         reg_target_path (str): output of parallel_target.
         reg_id (str): the ID of the region to recover.
         recover_fpath (fstr): output path to save the recovered 3D coordinates.
@@ -107,27 +107,31 @@ def parallel_single_recover(
     if comm.rank == 0:
         coorw_df = read_data(coor_wnan_path)
         lnr_df = read_data(lnr_path)
-        coor_reg = coorw_df[coorw_df["chr"]==reg_id]
-        lnr_reg = lnr_df[lnr_df["chr"]==reg_id]
+        coor_reg = coorw_df[coorw_df["chr"] == reg_id]
+        lnr_reg = lnr_df[lnr_df["chr"] == reg_id]
 
         tar_chr = DistDataFrame(read_data(reg_target_path))
 
         assert np.all(pd.unique(coor_reg["cell_id"]) == pd.unique(lnr_reg["cell_id"]))
 
-        coorbuff = np.stack(coor_reg.groupby("cell_id", sort=False).apply(
-            lambda x: x.sort_values("pos")[["x", "y", "z"]].values
-        ).values)
-        lnrbuff = np.stack(lnr_reg.groupby("cell_id", sort=False).apply(
-            lambda x: x.sort_values("pos")[["x", "y", "z"]].values
-        ).values).ravel(order="C")
+        coorbuff = np.stack(
+            coor_reg.groupby("cell_id", sort=False)
+            .apply(lambda x: x.sort_values("pos")[["x", "y", "z"]].values)
+            .values
+        )
+        lnrbuff = np.stack(
+            lnr_reg.groupby("cell_id", sort=False)
+            .apply(lambda x: x.sort_values("pos")[["x", "y", "z"]].values)
+            .values
+        ).ravel(order="C")
         tarbuff = tar_chr[pd.unique(coor_reg["cell_id"])].values.T
-        
+
         shapes = np.array([coorbuff.shape[1], tarbuff.shape[1]])
 
         ave, res = divmod(coorbuff.shape[0], comm.size)
-        count = np.array([ave+1 if p < res else ave for p in range(comm.size)])
+        count = np.array([ave + 1 if p < res else ave for p in range(comm.size)])
         index = np.array([sum(count[:p]) for p in range(comm.size)])
-        index_a, index_b = index*shapes[0]*3, index*shapes[1]
+        index_a, index_b = index * shapes[0] * 3, index * shapes[1]
 
         coorbuff = coorbuff.ravel(order="C")
         tarbuff = tarbuff.ravel(order="C")
@@ -143,28 +147,30 @@ def parallel_single_recover(
     if comm.rank == 0:
         trf = tar_chr[["lmbda", "mu", "var"]].values.ravel(order="C")
     else:
-        trf = np.zeros(shapes[1]*3, dtype="float")
+        trf = np.zeros(shapes[1] * 3, dtype="float")
     comm.Bcast(trf, root=0)
     trf = trf.reshape((shapes[1], 3))
 
-    count_a = count*shapes[0]*3
+    count_a = count * shapes[0] * 3
     coorrec = np.zeros(count_a[comm.rank], dtype="float")
     comm.Scatterv([coorbuff, count_a, index_a, MPI.DOUBLE], coorrec, root=0)
     coorrec = coorrec.reshape((count[comm.rank], shapes[0], 3))
 
-    lnrrec = np.zeros(count[comm.rank]*shapes[0]*3, dtype="float")
+    lnrrec = np.zeros(count[comm.rank] * shapes[0] * 3, dtype="float")
     comm.Scatterv([lnrbuff, count_a, index_a, MPI.DOUBLE], lnrrec, root=0)
     lnrrec = lnrrec.reshape((count[comm.rank], shapes[0], 3))
 
-    count_b = count*shapes[1]
+    count_b = count * shapes[1]
     tarrec = np.zeros([count[comm.rank], shapes[1]], dtype="float")
     comm.Scatterv([tarbuff, count_b, index_b, MPI.DOUBLE], tarrec, root=0)
     tarrec = tarrec.reshape((count[comm.rank], shapes[1]))
 
-    opt = np.array([
-        recover_3d_coor_single_chr(raw, lnr, fla_mat, trf)
-        for raw, lnr, fla_mat in zip(coorrec, lnrrec, tarrec)
-    ]).ravel(order="C")
+    opt = np.array(
+        [
+            recover_3d_coor_single_chr(raw, lnr, fla_mat, trf)
+            for raw, lnr, fla_mat in zip(coorrec, lnrrec, tarrec)
+        ]
+    ).ravel(order="C")
 
     opt_all = np.zeros(np.sum(count_a), dtype="float")
     comm.Gatherv(opt, [opt_all, count_a, index_a, MPI.DOUBLE], root=0)
@@ -176,13 +182,7 @@ def parallel_single_recover(
         save_coor(opt_chr_df, coor_wnan_path, recover_fpath.format(reg_id))
 
 
-def parallel_wrapper(
-        MPI, 
-        output_dire, 
-        suf,
-        ann_path, 
-        coor_wnan_path
-):
+def parallel_wrapper(MPI, output_dire, suf, ann_path, coor_wnan_path):
     """impute missing 3D coordinates parallelly.
 
     Args:
@@ -198,12 +198,14 @@ def parallel_wrapper(
     comm.Barrier()
 
     target_fpath = parallel_dist_mat(
-        MPI=MPI, 
-        output_dire=output_dire, 
-        suf=suf, 
-        coor_wnan_path=coor_wnan_path, 
-        ann_path=ann_path
+        MPI=MPI,
+        output_dire=output_dire,
+        suf=suf,
+        coor_wnan_path=coor_wnan_path,
+        ann_path=ann_path,
     )
+
+    # target_fpath = os.path.join(output_dire, "target_dist_" + suf + "_reg{}.txt")
 
     lnr_path = os.path.join(output_dire, f"linear_coor_{suf}.txt")
     if comm.rank == 0 and not os.path.exists(lnr_path):
@@ -216,28 +218,27 @@ def parallel_wrapper(
 
     for reg_id in pd.unique(coorw_df["chr"]):
         parallel_single_recover(
-            MPI=MPI, 
-            reg_id=reg_id, 
-            recover_fpath=recover_fpath, 
-            coor_wnan_path=coor_wnan_path, 
-            lnr_path=lnr_path, 
-            reg_target_path=target_fpath.format(reg_id)
+            MPI=MPI,
+            reg_id=reg_id,
+            recover_fpath=recover_fpath,
+            coor_wnan_path=coor_wnan_path,
+            lnr_path=lnr_path,
+            reg_target_path=target_fpath.format(reg_id),
         )
 
     all_coor_path = os.path.join(output_dire, f"recover_coor_{suf}.txt")
     if comm.rank == 0:
-        recover_coors = pd.concat([
-            read_data(recover_fpath.format(reg_id))
-            for reg_id in pd.unique(coorw_df["chr"])
-        ], ignore_index=True, sort=False)
-        save_coor(
-            recover_coors, 
-            coor_wnan_path,
-            all_coor_path
+        recover_coors = pd.concat(
+            [
+                read_data(recover_fpath.format(reg_id))
+                for reg_id in pd.unique(coorw_df["chr"])
+            ],
+            ignore_index=True,
+            sort=False,
         )
+        save_coor(recover_coors, coor_wnan_path, all_coor_path)
         for reg_id in pd.unique(coorw_df["chr"]):
             os.remove(target_fpath.format(reg_id))
             os.remove(recover_fpath.format(reg_id))
         print("Ended")
     comm.Barrier()
-    
