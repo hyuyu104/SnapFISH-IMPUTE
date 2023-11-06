@@ -55,7 +55,7 @@ OUT/DIRE/
 
 ### Normalization of Pairwise Distances
 
-SnapFISH-IMPUTE includes a normalization module to remove 1D genomic distance bias from the data and transform the distribution to approximately `N(0,1)`. This module can be called in Python by
+SnapFISH-IMPUTE includes a normalization module to remove 1D genomic distance bias from the data and transform the distribution to approximately $N(0,1)$. This module can be called in Python by
 ```python
 data = sfimpute.preprocess.read_data("PATH/TO/COOR.txt")
 ann = sfimpute.preprocess.read_data("PATH/TO/ann.txt")
