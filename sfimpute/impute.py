@@ -9,7 +9,7 @@ from scipy.optimize import minimize
 from skimage import transform
 from sklearn.metrics.pairwise import nan_euclidean_distances
 
-from preprocess import to_dist_mat, read_data
+from .preprocess import to_dist_mat, read_data
 
 
 class DistDataFrame(pd.DataFrame):

@@ -8,8 +8,8 @@ import seaborn as sns
 
 
 def format_fish_data(
-    ann:pd.DateFrame, 
-    data:pd.DateFrame, 
+    ann:pd.DataFrame, 
+    data:pd.DataFrame, 
     reg_col:str, pos_col:str, s1d_col:str, e1d_col:str, 
     grp_cols:str, 
     extra_col:list
@@ -17,8 +17,8 @@ def format_fish_data(
     """format multiplexed DNA FISH data.
 
     Args:
-        ann (pd.DateFrame): 1D genomic location annotation file.
-        data (pd.DateFrame): 3D coordinates.
+        ann (pd.DataFrame): 1D genomic location annotation file.
+        data (pd.DataFrame): 3D coordinates.
         reg_col (str): column name, imaging region of interest.
         pos_col (str): column name, locus ID, unique within each region.
         s1d_col (str): column name, the starting 1D genomic location.

@@ -2,7 +2,7 @@ import os
 import pandas as pd
 import numpy as np
 
-from preprocess import read_data, save_coor
+from .preprocess import read_data, save_coor
 from .impute import *
 
 
