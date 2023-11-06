@@ -30,7 +30,7 @@ def generate_single_reg_parallel(MPI, reg_coor_data, reg_ann_df, reg_id, target_
 
         r = int(np.floor(reg_ann_df["pos"].max() / 20))
         if comm.rank == 0:
-            print(f"region {reg_id} resized by a factor of", r)
+            print(f"Region {reg_id} resized by a factor of", r)
 
         resized = np.stack([conv_resize(t, r) for t in mat_arr])
         resized = to_vecs_single_reg(resized)

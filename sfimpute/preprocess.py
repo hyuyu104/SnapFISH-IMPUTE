@@ -244,11 +244,10 @@ def to_dist_mat(d, fill_val=0.0):
     dist_mat = np.diag([fill_val] * num_ids)
 
     uids = np.triu_indices(num_ids, 1)
-    lids = np.tril_indices(num_ids, -1)
     fids = np.triu_indices_from(dist_vals)
 
     dist_mat[uids] = dist_vals[fids]
-    dist_mat[lids] = dist_vals.T[fids]
+    dist_mat.T[uids] = dist_vals[fids]
     return dist_mat
 
 
