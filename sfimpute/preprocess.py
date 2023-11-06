@@ -1,314 +1,329 @@
-import os, re
+import re
+from itertools import combinations
+
 import pandas as pd
 import numpy as np
-from .impute import read_data
+from matplotlib import pyplot as plt
+import seaborn as sns
 
 
-def process_mESC_seqFISH_25kb(
-        mESC_dire="data_mESC_seqFISH", 
-        mBCC_dire="data_mBCC_seqFISH", 
+def format_fish_data(
+    ann:pd.DateFrame, 
+    data:pd.DateFrame, 
+    reg_col:str, pos_col:str, s1d_col:str, e1d_col:str, 
+    grp_cols:str, 
+    extra_col:list
 ):
-    """process the 25Mb subset from the mESCs dataset. 
+    """format multiplexed DNA FISH data.
 
     Args:
-        mESC_dire (str): mESCs data directory.
-        mBCC_dire (str): mouse brain cells data directory.
+        ann (pd.DateFrame): 1D genomic location annotation file.
+        data (pd.DateFrame): 3D coordinates.
+        reg_col (str): column name, imaging region of interest.
+        pos_col (str): column name, locus ID, unique within each region.
+        s1d_col (str): column name, the starting 1D genomic location.
+        e1d_col (str): column name, the ending 1D genomic location.
+        grp_cols (list): column names that determine a unique haploid.
+        extra_col (list): extra columns to include in the output.
 
     Returns:
-        str, str: processed 3D coordinates path, processed 1D annotation file path
+        (pd.DataFrame, pd.DataFrame): processed annotation and data.
     """
-    resol = "25kb"
-    mESC_fpath = "DNAseqFISH+{}loci-E14-replicate{}.csv"
+    type_dict = {reg_col: str, pos_col: str, s1d_col: int, e1d_col: int}
+    ann = ann.astype(type_dict)
 
-    # the Nature paper has the same barcoding
-    ann_path = os.path.join(mBCC_dire, "science.abj1966_table_s1.xlsx")
-    ann = pd.read_excel(ann_path, sheet_name="25-kb resolution").dropna()
-    ann_processed = mBCC_process_ann(ann)
+    # ensure data has region column
+    if reg_col not in data.columns:
+        pos_to_reg_map = pd.Series(ann[reg_col].values, index=ann[pos_col])
+        data[reg_col] = data[pos_col].map(pos_to_reg_map)
+    data = data.astype(
+        {k: v for k, v in type_dict.items() if k in data.columns}
+    )
 
-    # mapping series, convert geneID to locus ID
-    conv_sr = ann_processed["pos"].copy()
-    conv_sr.index = ann["geneID"]
-    # mapping series, convert geneID to region ID
-    chr_sr = ann_processed["chr"].copy()
-    chr_sr.index = ann["geneID"]
+    ann_by_1d = (
+        ann.groupby(reg_col, sort=False)
+        .apply(lambda df: df.sort_values(e1d_col))
+        .reset_index(drop=True)
+    )
+    # pos starts from 1 in each imaging region
+    pos_srs = (
+        ann_by_1d.groupby(reg_col, sort=False)
+        .apply(lambda df: np.arange(1, len(df) + 1))
+        .values
+    )
+    # new pos numbering
+    pos = np.concatenate(pos_srs)
+    pos_key = ann_by_1d[reg_col] + "." + ann_by_1d[pos_col]
+    # map: original str pos to int pos
+    pos_map = pd.Series(pos, index=pos_key.values)
 
-    rep1_data = pd.read_csv(os.path.join(mESC_dire, mESC_fpath.format(resol, 1)))
-    rep1_data.insert(0, "rep", 1)
-    rep2_data = pd.read_csv(os.path.join(mESC_dire, mESC_fpath.format(resol, 2)))
-    rep2_data.insert(0, "rep", 2)
-    # merge data from the two biological replicates
-    mESC_data = pd.concat([rep1_data, rep2_data], sort=False, ignore_index=True)
+    # rename the columns of the annotation file
+    ann_by_1d["pos"] = pos_key.map(pos_map)
+    kept_ann = ann_by_1d.rename(
+        {reg_col: "region", s1d_col: "start", e1d_col: "end"}, axis=1
+    )
+    final_ann = kept_ann[["region", "pos", "start", "end"]]
 
-    # labelID -> which haploid each locus belongs to
-    mESC_data = mESC_data[(mESC_data["labelID"]==0)|(mESC_data["labelID"]==1)]
-    mESC_data = mESC_data.rename({"regionID (hyb1-60)":"geneID"}, axis=1)
-    mESC_data = mESC_data.reset_index(drop=True)
+    # convert data's pos to int
+    data_pos_key = data[reg_col] + "." + data[pos_col]
+    data["pos"] = data_pos_key.map(pos_map)
 
-    grp_cols = ["rep", "fov", "cellID", "labelID"]
-    mESC_data["chr"] = mESC_data["chromID"]
-    mESC_data["pos"] = mESC_data["geneID"]
-    mESC_data = mESC_data.sort_values(
-        grp_cols[:2] + ["chr"] + grp_cols[2:] + ["pos", "dot_intensity"]
-    ).reset_index(drop=True)
+    data["region"] = data[reg_col]
 
-    mESC_data_filtered = mESC_data.groupby(
-        grp_cols[:2] + ["chr"] + grp_cols[2:] + ["pos"], 
-        sort=False
-    ).tail(1).reset_index(drop=True)
+    # keep only one 3D coordinate for each id
+    unique_cols = grp_cols + ["region", "pos"]
+    kept_rows = (
+        data.groupby(unique_cols, sort=False).head(1).reset_index(drop=True)
+    )
 
-    c = grp_cols[0]
-    chr_id = c + "." + mESC_data_filtered[c].astype("str")
-    for c in grp_cols[1:]:
-        chr_id += f".{c}." + mESC_data_filtered[c].astype("str")
-    mESC_data_filtered["cell_id"] = chr_id
-    mESC_data_filtered = mESC_data_filtered[
-        ["chr", "cell_id", "pos", "x", "y", "z"]
-    ]
-
-    # convert to nm
-    mESC_data_filtered["x"] = (mESC_data_filtered["x"] * 103).round(6)
-    mESC_data_filtered["y"] = (mESC_data_filtered["y"] * 103).round(6)
-    mESC_data_filtered["z"] = (mESC_data_filtered["z"] * 250).round(6)
-
-    print(
-        f"mESC seqFISH+ {resol} rep1&rep2:",
-        len(pd.unique(mESC_data_filtered["cell_id"])), 
-        "chromosomes"
-    ) # -> 892 chromosomes in total
-    coor_path = os.path.join(mESC_dire, f"mESC_seqFISH_{resol}_coor.txt")
-    mESC_data_filtered.to_csv(coor_path, index=False, sep="\t")
-    ann_path = os.path.join(mESC_dire, f"mESC_seqFISH_{resol}_ann.txt")
-    ann_processed.to_csv(ann_path, index=False, sep="\t")
-    return coor_path, ann_path
-
-
-def process_mESC_seqFISH_1Mb(jie_dire, mBCC_dire, mESC_dire):
-    """process the 1Mb subset from the mESCs dataset. 
-
-    Args:
-        jie_dire (str): jie aligned result directory.
-        mBCC_dire (str): mouse brain cells data directory.
-        mESC_dire (str): mESCs data directory.
-
-    Returns:
-        str, str: processed 3D coordinates path, processed 1D annotation file path
-    """
-    data = []
-    if "mESC" in jie_dire and "1Mb" in jie_dire:
-        ids4DN = ["FIS6MLXGA", "FIU73OR5W"]
-        output_dire = mESC_dire
-    elif "mBCC" in jie_dire and "1Mb" in jie_dire:
-        ids4DN = ["FIYNWVJEP", "FIFBXKXK9", "FIXGTJBGU"]
-        output_dire = mBCC_dire
-    for i, id4DN in enumerate(ids4DN):
-        data_path = os.path.join(jie_dire, f"4DN{id4DN}.csv")
-        info_lines = []
-        with open(data_path, "r") as f:
-            line = f.readline()
-            while line.startswith("#") or line.startswith('"'):
-                info_lines.append(line)
-                line = f.readline()
-        col_str = re.sub("^.*\((.*)\).*$", "\g<1>", info_lines[-1]).strip().lower()
-        d = pd.read_csv(data_path, skiprows=len(info_lines), names=col_str.split(","))
-        d["rep"] = i + 1
-        data.append(d)
-    data = pd.concat(data, sort=False, ignore_index=True)
-
-    id_cols = ["rep", "fov", "cellID", "chr", "labelID"]
-    data[id_cols[1:]] = np.stack(data["trace_id"].str.split("_").values).astype("int")
-
-    pos_raw = data["chr"].astype("str") + "." + data["chrom_start"].astype("str")
-
-    ann_path = os.path.join(mBCC_dire, "science.abj1966_table_s1.xlsx")
-    ann = pd.read_excel(ann_path, sheet_name="1-Mb resolution").dropna()
-    ann_processed = mBCC_process_ann(ann)
-
-    pos_map = ann_processed["chr"].astype("str") + "." + ann_processed["start"].astype("str")
-    pos_map = pd.Series(ann_processed["pos"].values, index=pos_map.values)
-    data["pos"] = pos_raw.map(pos_map)
-
-    sort_cols = ["chr", "rep", "fov", "cellID", "labelID", "pos"]
-    data = data.sort_values(sort_cols, ignore_index=True)
-
-    grp_cols = ["rep", "fov", "cellID", "labelID"]
-    c = grp_cols[0]
-    chr_id = c + "." + data[c].astype("str")
-    for c in grp_cols[1:]:
-        chr_id += f".{c}." + data[c].astype("str")
-    data["cell_id"] = chr_id
-    data = data[["chr", "cell_id", "pos", "x", "y", "z"]]
-
-    data["x"] = (data["x"]*1000).round(6)
-    data["y"] = (data["y"]*1000).round(6)
-    data["z"] = (data["z"]*1000).round(6)
-
-    data_name = jie_dire.split("/")[-1]
-    coor_path = os.path.join(output_dire, f"{data_name}_coor.txt")
-    data.to_csv(coor_path, index=False, sep="\t")
-    ann_path = os.path.join(output_dire, f"{data_name}_ann.txt")
-    ann_processed.to_csv(ann_path, index=False, sep="\t")
-    return coor_path, ann_path
-
-
-def process_mBCC_seqFISH(resol, mBCC_dire="data_mBCC_seqFISH"):
-    """process the mouse brain cell dataset. 
-
-    Args:
-        mBCC_dire (str, optional): mouse brain cell data direcctory. Defaults to "data_mBCC_seqFISH".
-
-    Returns:
-        str, str: processed 3D coordinates path, processed 1D annotation file path
-    """
-    ann_path = os.path.join(mBCC_dire, "science.abj1966_table_s1.xlsx")
-    if resol == "1Mb":
-        path = "TableS7_brain_DNAseqFISH_1Mb_voxel_coordinates_2762cells.csv"
-        ann = pd.read_excel(ann_path, sheet_name="1-Mb resolution").dropna()
-        pos = np.concatenate(ann.groupby("chromID", sort=False).apply(
-            lambda x: np.arange(1, len(x)+1)
-        ).values)
-        pos_map = pd.Series(pos, index=ann["geneID"])
-    if resol == "25kb":
-        path = "TableS8_brain_DNAseqFISH_25kb_voxel_coordinates_2762cells.csv"
-        ann = pd.read_excel(ann_path, sheet_name="25-kb resolution").dropna()
-    coor_data = pd.read_csv(os.path.join(mBCC_dire, path))
-    ann_processed = mBCC_process_ann(ann)
-
-    coor_data = coor_data[coor_data["labelID"] >= 0]
-    coor_data["x"] = (coor_data["x"]*103).round(6)
-    coor_data["y"] = (coor_data["y"]*103).round(6)
-    coor_data["z"] = (coor_data["z"]*250).round(6)
-
-    if "geneID" in coor_data.columns:
-        coor_data["pos"] = coor_data["geneID"].map(pos_map)
-    else:
-        coor_data["pos"] = coor_data["regionID_chrom"]
-    coor_data = coor_data.drop("rep", axis=1).rename({
-        "replicateID":"rep", "cluster label":"cluster", "chromID":"chr"
-    }, axis=1)
-
-    grp_cols = ["rep", "fov", "cellID", "labelID"]
-    kept_cols = grp_cols + ["chr", "pos"] + ["x", "y", "z"] + ["cluster"]
-    sub_cols = coor_data[kept_cols]
-    kept_rows = sub_cols.groupby(
-        kept_cols[:-4], sort=False
-    ).head(1).reset_index(drop=True)
-
-    sort_cols = ["chr", "rep", "fov", "cellID", "labelID", "pos"]
+    # sort the dataframe
+    vals = pd.unique(ann[reg_col])
+    chr_map = pd.Series(np.arange(len(vals)), index=vals)
+    # encode regions to ensure they are in the same order
+    kept_rows["int_" + reg_col] = kept_rows["region"].map(chr_map)
+    for c in grp_cols:
+        vals = pd.unique(kept_rows[c])
+        int_map = pd.Series(np.arange(len(vals)), index=vals)
+        kept_rows["int_" + c] = kept_rows[c].map(int_map)
+    sort_cols = ["int_" + reg_col] + ["int_" + c for c in grp_cols] + ["pos"]
     kept_rows = kept_rows.sort_values(sort_cols, ignore_index=True)
 
+    # generate unique haploid chromatin ID
     c = grp_cols[0]
     chr_id = c + "." + kept_rows[c].astype("str")
     for c in grp_cols[1:]:
         chr_id += f".{c}." + kept_rows[c].astype("str")
-    kept_rows["cell_id"] = chr_id
-    data = kept_rows[["chr", "cell_id", "pos", "x", "y", "z", "cluster"]]
+    kept_rows["haploid"] = chr_id
 
-    coor_path = os.path.join(mBCC_dire, f"mBCC_seqFISH_{resol}_coor.txt")
-    data.to_csv(coor_path, index=False, sep="\t")
-    ann_path = os.path.join(mBCC_dire, f"mBCC_seqFISH_{resol}_ann.txt")
-    ann_processed.to_csv(ann_path, index=False, sep="\t")
-    return coor_path, ann_path
+    kept_cols = ["region", "haploid", "pos", "x", "y", "z"] + extra_col
+    final_data = kept_rows[kept_cols]
+    return final_ann, final_data
 
 
-def insert_nan_to_coor(coor_path, ann_path):
-    """insert NaN to raw 3D coordinates.
+def read_4dn_csv(data_path:str, trace_cols:list):
+    """read data downloaded from 4DN data portal.
 
     Args:
-        coor_path (str): the processed 3D coordinates file path.
-        ann_path (str): the processed 1D genomic location annotation file path.
-    """
-    data = read_data(coor_path)
-    ann = read_data(ann_path)
-
-    inserted_nan = []
-    for reg_id, df in data.groupby("chr", sort=False):
-
-        sub_ann = ann[ann["chr"]==reg_id]
-        chr_ids = pd.unique(df["cell_id"])
-
-        num_loci, num_chrs = len(sub_ann), len(chr_ids)
-        full_chr_ids = np.repeat(chr_ids, num_loci)
-        full_pos = np.tile(sub_ann["pos"], num_chrs)
-
-        full_df = pd.DataFrame({"chr":[reg_id]*len(full_pos), "cell_id":full_chr_ids, "pos":full_pos})
-        inserted_nan.append(full_df.merge(df, how="left", on=["chr", "cell_id", "pos"], sort=False))
-
-    pd.concat(inserted_nan, sort=False, ignore_index=True).to_csv(
-        coor_path[:-4] + "_wnan" + coor_path[-4:],
-        index=False, sep="\t"
-    )
-
-
-def mBCC_process_ann(ann):
-    """process the 1D annotation file from Takei et al.
-
-    Args:
-        ann (pd.DataFrame): raw annotation file.
+        data_path (str): the local file path of the data.
+        trace_cols (list): the name of each part after splitting trace_id
+            by "_".
 
     Returns:
-        pd.DataFrame: chr, pos, start, end
+        (pd.DataFrame, pd.DataFrame): processed annotation and data.
     """
-    ann = ann.astype({"chromID":"int", "Start":"int", "End":"int"})
-
-    ann["pos"] = ann.groupby("chromID", sort=False).apply(
-        lambda x: x["regionID"] - np.min(x["regionID"]) + 1
-    ).values.astype("int")
-    return ann[["chromID", "pos", "Start", "End"]].rename({
-        "chromID":"chr", "Start":"start", "End":"end"
-    }, axis=1)
-
-
-def join_sox2(sox2_dire="data_mESC_Sox2"):
-    """merge the two alleles in the Sox2 dataset.
-
-    Args:
-        sox2_dire (str, optional): Sox2 data directory. Defaults to "data_mESC_Sox2".
-    """
-    al129 = read_data(os.path.join(sox2_dire, "allele_129_coor_wnan.txt"))
-    alcast = read_data(os.path.join(sox2_dire, "allele_cast_coor_wnan.txt"))
-    al129["chr"], alcast["chr"] = "129", "cast"
-    alall = pd.concat([al129, alcast], axis=0, sort=False, ignore_index=True)
-    alall.round(6).to_csv(
-        os.path.join(sox2_dire, "mESC_Sox2_coor_wnan.txt"), sep="\t", index=False
+    info_lines = []
+    with open(data_path, "r") as f:
+        line = f.readline()
+        while line.startswith("#") or line.startswith('"'):
+            info_lines.append(line)
+            line = f.readline()
+    col_str = re.sub("^.*\((.*)\).*$", "\g<1>", info_lines[-1]).strip().lower()
+    data = pd.read_csv(
+        data_path, skiprows=len(info_lines), names=col_str.split(",")
     )
 
-    ann = read_data(os.path.join(sox2_dire, "sox2_ann.txt"))
-    ann129, anncast = ann.copy(), ann.copy()
-    ann129["chr"], anncast["chr"] = "129", "cast"
-    annall = pd.concat([ann129, anncast], axis=0, sort=False, ignore_index=True)
-    annall.to_csv(os.path.join(sox2_dire, "mESC_Sox2_ann.txt"), sep="\t", index=False)
+    pre_ann = data[["chrom", "chrom_start", "chrom_end"]].drop_duplicates(
+        ["chrom", "chrom_start"], ignore_index=True
+    )
+
+    ann = (
+        pre_ann.groupby("chrom", sort=False, as_index=False)
+        .apply(lambda df: df.sort_values("chrom_start").reset_index(drop=True))
+        .reset_index(level=1)
+        .rename({"level_1": "pos"}, axis=1)
+        .reset_index(drop=True)
+    )
+
+    ann["pos"] = ann["pos"] + 1
+
+    spl_trace = data["trace_id"].str.split("_").values
+    data[trace_cols] = np.stack(spl_trace)
+
+    pos_key = (
+        data["chrom"].astype("str") + "." + data["chrom_start"].astype("str")
+    )
+    pos_map = pd.Series(
+        data=ann["pos"].values,
+        index=ann["chrom"].astype("str")
+        + "."
+        + ann["chrom_start"].astype("str"),
+    )
+    data["pos"] = pos_key.map(pos_map)
+
+    return ann, data
 
 
-def process_all(
-        mESC_dire="data_mESC_seqFISH", 
-        mBCC_dire="data_mBCC_seqFISH", 
-        jie_dire="jie_aligned"
-):
-    """process mESCs seqFISH+ 25kb&1Mb and mouse brain cells seqFISH+ 1Mb.
+def fill_missing_by_nan(data:pd.DataFrame, ann:pd.DataFrame):
+    """insert missing rows to data with 3D coordinates replaced by np.nan.
 
     Args:
-        mESC_dire (str, optional): mESCs data directory. Defaults to "data_mESC_seqFISH".
-        mBCC_dire (str, optional): mouse brain cells data directory. Defaults to "data_mBCC_seqFISH".
-        jie_dire (str, optional): jie aligned result directory. Defaults to "jie_aligned".
+        data (pd.DataFrame): processed data from format_fish_data.
+        ann (pd.DataFrame): processed annotation file from format_fish_data.
+
+    Returns:
+        pd.DataFrame: processed data with missing 3D coordinates.
     """
-    coor_path, ann_path = process_mESC_seqFISH_25kb(mESC_dire=mESC_dire, mBCC_dire=mBCC_dire)
-    insert_nan_to_coor(coor_path=coor_path, ann_path=ann_path)
+    inserted_nan = []
+    default_cols = ["region", "haploid", "pos", "x", "y", "z"]
+    rep_cols = data.columns.drop(default_cols[2:])
+    for reg_id, df in data.groupby("region", sort=False):
+        sub_ann = ann[ann["region"] == reg_id]
+        num_loci = len(sub_ann)
+        num_chrs = len(pd.unique(df["haploid"]))
 
-    jie_subdire = os.path.join(jie_dire, "mESC_seqFISH_1Mb")
-    coor_path, ann_path = process_mESC_seqFISH_1Mb(jie_subdire, mBCC_dire, mESC_dire)
-    insert_nan_to_coor(coor_path, ann_path)
+        rep_vals = df.groupby("haploid", sort=False).head(1)[rep_cols]
+        full_other_cols = np.repeat(rep_vals.values, num_loci, axis=0)
+        full_pos = np.tile(sub_ann["pos"], num_chrs)
 
-    jie_subdire = os.path.join(jie_dire, "mBCC_seqFISH_1Mb")
-    coor_path, ann_path = process_mESC_seqFISH_1Mb(jie_subdire, mBCC_dire, mESC_dire)
-    insert_nan_to_coor(coor_path, ann_path)
+        full_df = pd.DataFrame(full_other_cols, columns=rep_cols)
+        full_df["pos"] = full_pos
+        full_df = full_df.merge(
+            df[default_cols], how="left", on=default_cols[:3], sort=False
+        )
+        inserted_nan.append(full_df)
 
-    for resol in ["1Mb", "25kb"]:
-        coor_path, ann_path = process_mBCC_seqFISH(resol, mBCC_dire)
-        insert_nan_to_coor(coor_path, ann_path)
-        mbcc_wnan_coor_path = os.path.join(mBCC_dire, f"mBCC_seqFISH_{resol}_coor_wnan.txt")
-        data = pd.read_csv(mbcc_wnan_coor_path, sep="\t")
-        
-        cell_cluster = data.dropna()[["cell_id", "cluster"]].drop_duplicates()
-        cluster_map = pd.Series(cell_cluster["cluster"].values, index=cell_cluster["cell_id"])
-        data["cluster"] = data["cell_id"].map(cluster_map).astype("int")
-        data.round(6).to_csv(mbcc_wnan_coor_path, sep="\t", index=False)
+    exp_data = pd.concat(inserted_nan, sort=False, ignore_index=True)
+    exp_data = exp_data[data.columns]
+    return exp_data
+
+
+def read_data(path):
+    """read 3D coordinates/pairwise distances files. Convert imaging region
+    and cell ID columns to strings.
+
+    Args:
+        path (str): file path.
+
+    Returns:
+        pd.DataFrame: data read from the file path.
+    """
+    dtype_dict = {"region": "str", "haploid": "str", "pos": "int"}
+    data = pd.read_csv(path, sep="\t")
+
+    shared_type = {k: v for k, v in dtype_dict.items() if k in data.columns}
+    data = data.astype(shared_type)
+
+    return data
+
+
+def save_coor(save_coor_df, raw_coor_path, save_path):
+    """save imputed 3D coordinates. Automatically round the 3D coordinates
+    to the precision of the input file.
+
+    Args:
+        save_coor_df (pd.DataFrame): the dataframe to save.
+        raw_coor_path (pd.DataFrame): the raw 3D coordinates path.
+        save_path (str): path to save the file.
+    """
+    raw_as_str = pd.read_csv(raw_coor_path, dtype="str", sep="\t")
+    for coor_name in ["x", "y", "z"]:
+        str_col = raw_as_str[coor_name].astype("str")
+        precs = str_col.str.replace(r"^[^\.]+\.?", "").str.len()
+        prec = np.max(precs)
+
+        save_coor_df[coor_name] = save_coor_df[coor_name].round(prec)
+
+    save_coor_df.to_csv(save_path, sep="\t", index=False)
+
+
+def to_dist_mat(d, fill_val=0.0):
+    """convert a 1-D distance vector to matrix.
+
+    Args:
+        d (np.array): 1-D pairwise distances.
+        fill_val (float): values to fill the diagonal. Defaults to 0.0.
+
+    Returns:
+        arr: K*K dimension matrix.
+    """
+    num_ids = int((1 + (1 + 8 * len(d)) ** 0.5) / 2)
+    id_iter = combinations(np.arange(1, num_ids + 1), 2)
+    mat_df = pd.DataFrame(list(id_iter), columns=["id1", "id2"])
+    mat_df["d"] = d
+    dist_vals = pd.pivot_table(mat_df, "d", "id1", "id2", dropna=False).values
+    dist_mat = np.diag([fill_val] * num_ids)
+
+    uids = np.triu_indices(num_ids, 1)
+    lids = np.tril_indices(num_ids, -1)
+    fids = np.triu_indices_from(dist_vals)
+
+    dist_mat[uids] = dist_vals[fids]
+    dist_mat[lids] = dist_vals.T[fids]
+    return dist_mat
+
+
+def to_double_dist_mat(val1, val2):
+    """upper right is val1, lower left is val2.
+
+    Args:
+        val1 (array): the first pairwise distance matrix.
+        val2 (array): the second pairwise distance matrix.
+
+    Returns:
+        array: K*K matrix.
+    """
+    mat = to_dist_mat(val1)
+    mat[np.tril_indices_from(mat)] = to_dist_mat(val2)[
+        np.tril_indices_from(mat)
+    ]
+    return mat
+
+
+def heatmap_wrapper(
+    val,
+    ax,
+    name1=None,
+    name2=None,
+    title=None,
+    cbar_kws={"shrink": 0.9},
+    **kwargs,
+):
+    """wrapper of sns.heatmap with preferred parameters.
+
+    Args:
+        val (array): K*K matrix to plot.
+        ax (plt.ax): plt.ax.
+        name1 (str, optional): x label. Defaults to None.
+        name2 (str, optional): y label. Defaults to None.
+        title (str, optional): title. Defaults to None.
+        cbar_kws (dict, optional): cbar_kws. Defaults to {"shrink": 0.9}.
+    """
+    tril = np.tril(val)
+    if np.sum((~np.isnan(tril)) & (tril != 0)) == 0:
+        val = val.copy()  # avoid changing the input values
+        val[np.tril_indices_from(val)] = val.T[np.tril_indices_from(val)]
+
+    cmap = plt.get_cmap("seismic_r")
+    cmap.set_bad("white")
+    sns.heatmap(
+        val,
+        cmap=cmap,
+        square=True,
+        xticklabels=False,
+        yticklabels=False,  # rasterized=True,
+        ax=ax,
+        cbar_kws=cbar_kws,
+        **kwargs,
+    )
+    ax.set_xlabel(name1, fontsize=10)
+    ax.xaxis.set_label_position("top")
+    ax.set_ylabel(name2, fontsize=10)
+    ax.set_title(title, y=-0.2, fontsize=10)
+
+
+def row_heatmap(mat_ls, cbar=False, **kwargs):
+    """plot a row of heatmaps.
+
+    Args:
+        mat_ls (list): list of 1D or 2D arrays.
+        cbar (bool, optional): whether to plot color bars. Defaults to False.
+    """
+    nmaps = len(mat_ls)
+    if nmaps == 1:
+        ax = plt.subplots(figsize=(3, 3))[1]
+        axes = np.array([ax])
+    else:
+        axes = plt.subplots(nrows=1, ncols=nmaps, figsize=(3 * nmaps, 3))[1]
+    for i, ax in enumerate(axes.flat):
+        hm = mat_ls[i] if len(mat_ls[i].shape) == 2 else to_dist_mat(mat_ls[i])
+        heatmap_wrapper(hm, cbar=cbar, ax=ax, **kwargs)

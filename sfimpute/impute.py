@@ -1,11 +1,15 @@
 from itertools import combinations
 import pandas as pd
 import numpy as np
+
 from scipy import stats, interpolate
 from scipy.spatial.distance import pdist
 from scipy.optimize import minimize
+
 from skimage import transform
 from sklearn.metrics.pairwise import nan_euclidean_distances
+
+from preprocess import to_dist_mat, read_data
 
 
 class DistDataFrame(pd.DataFrame):
@@ -32,7 +36,7 @@ class DistDataFrame(pd.DataFrame):
         Returns:
             np.array: key column names.
         """
-        COL = ["chr", "bin1", "x1", "bin2", "y1", "y-x", "lmbda", "mu", "var"]
+        COL = ["region", "bin1", "x1", "bin2", "y1", "y-x", "lmbda", "mu", "var"]
         return np.array([t for t in self.columns if t in COL])
 
     def vcol(self):
@@ -41,7 +45,7 @@ class DistDataFrame(pd.DataFrame):
         Returns:
             np.array: value column names.
         """
-        COL = ["chr", "bin1", "x1", "bin2", "y1", "y-x", "lmbda", "mu", "var"]
+        COL = ["region", "bin1", "x1", "bin2", "y1", "y-x", "lmbda", "mu", "var"]
         return np.array([t for t in self.columns if t not in COL])
 
     def to_darr(self, vcol=None):
@@ -59,32 +63,6 @@ class DistDataFrame(pd.DataFrame):
             return self[vcol].values
 
 
-def to_dist_mat(d, fill_val=0.0):
-    """convert a 1-D distance vector to matrix.
-
-    Args:
-        d (np.array): 1-D pairwise distances.
-        fill_val (float): values to fill the diagonal. Defaults to 0.0.
-
-    Returns:
-        arr: K*K dimension matrix.
-    """
-    num_ids = int((1 + (1 + 8 * len(d)) ** 0.5) / 2)
-    id_iter = combinations(np.arange(1, num_ids + 1), 2)
-    mat_df = pd.DataFrame(list(id_iter), columns=["id1", "id2"])
-    mat_df["d"] = d
-    dist_vals = pd.pivot_table(mat_df, "d", "id1", "id2", dropna=False).values
-    dist_mat = np.diag([fill_val] * num_ids)
-
-    uids = np.triu_indices(num_ids, 1)
-    lids = np.tril_indices(num_ids, -1)
-    fids = np.triu_indices_from(dist_vals)
-
-    dist_mat[uids] = dist_vals[fids]
-    dist_mat[lids] = dist_vals.T[fids]
-    return dist_mat
-
-
 def to_dist_df(coor_data, ann_df):
     """convert 3D coordinates to pairwise distances.
 
@@ -96,12 +74,12 @@ def to_dist_df(coor_data, ann_df):
     Returns:
         pd.DataFrame: (chr*M)*(5+N).
     """
-    coor_dists = coor_data.groupby(["chr", "cell_id"], sort=False).apply(
+    coor_dists = coor_data.groupby(["region", "haploid"], sort=False).apply(
         lambda x: pdist(x[["x", "y", "z"]])
     )
 
     dist_df_ls = []
-    for c, sub_ann_df in ann_df.groupby("chr", sort=False):
+    for c, sub_ann_df in ann_df.groupby("region", sort=False):
         single_chr_dists = np.stack(coor_dists[c].values).T
         sub_dist_df = pd.DataFrame(
             single_chr_dists, columns=coor_dists[c].index
@@ -113,19 +91,18 @@ def to_dist_df(coor_data, ann_df):
         sub_bin_df = pd.DataFrame(
             bin_cols, columns=["bin1", "x1", "bin2", "y1"]
         )
-        sub_bin_df.insert(0, "chr", c)
+        sub_bin_df.insert(0, "region", c)
+        sub_bin_df["y-x"] = sub_bin_df["y1"] - sub_bin_df["x1"]
 
         dist_df_ls.append(
             pd.concat([sub_bin_df, sub_dist_df], axis=1, sort=False)
         )
 
     dist_df = pd.concat(dist_df_ls, axis=0, sort=False)
-    cell_ids = pd.unique(coor_data["cell_id"]).tolist()
+    cell_ids = pd.unique(coor_data["haploid"]).tolist()
 
     sorted_cols = dist_df.columns[: sub_bin_df.shape[1]].tolist() + cell_ids
     dist_df = DistDataFrame(dist_df.loc[:, sorted_cols])
-    dist1d = dist_df["y1"] - dist_df["x1"]
-    dist_df.insert(len(dist_df.kcol()), "y-x", dist1d)
 
     start1d = ann_df["start"]
     # take the median of all 1D distance between consecutive loci
@@ -216,96 +193,6 @@ def conv_resize(mat, rsize):
     return r
 
 
-def read_data(path):
-    """read 3D coordinates/pairwise distances files. Convert imaging region
-    and cell ID columns to strings.
-
-    Args:
-        path (str): file path.
-
-    Returns:
-        pd.DataFrame: data read from the file path.
-    """
-    dtype_dict = {"chr": "str", "cell_id": "str", "pos": "int"}
-    data = pd.read_csv(path, sep="\t")
-
-    shared_type = {k: v for k, v in dtype_dict.items() if k in data.columns}
-    data = data.astype(shared_type)
-
-    return data
-
-
-def save_coor(save_coor_df, raw_coor_path, save_path):
-    """save imputed 3D coordinates. Automatically round the 3D coordinates
-    to the precision of the input file.
-
-    Args:
-        save_coor_df (pd.DataFrame): the dataframe to save.
-        raw_coor_path (pd.DataFrame): the raw 3D coordinates path.
-        save_path (str): path to save the file.
-    """
-    raw_as_str = pd.read_csv(raw_coor_path, dtype="str", sep="\t")
-    for coor_name in ["x", "y", "z"]:
-        str_col = raw_as_str[coor_name].astype("str")
-        precs = str_col.str.replace(r"^[^\.]+\.?", "").str.len()
-        prec = np.max(precs)
-
-        save_coor_df[coor_name] = save_coor_df[coor_name].round(prec)
-
-    save_coor_df.to_csv(save_path, sep="\t", index=False)
-
-
-def insert_missing_rows_single_chr(data, ann):
-    """helper method of insert_missing_rows, insert all missing rows of a
-    single imaging region.
-
-    Args:
-        data (pd.DataFrame): coordinate df with columns
-            chr, cell_id, pos, x, y, and z of the imaging region.
-        ann (pd.DataFrame): annotation file of the imaging region.
-    """
-    chr_ids = pd.unique(data["cell_id"])
-    pos_count = ann.shape[0]
-
-    cell_ids = np.repeat(chr_ids, pos_count)
-    pos_ids = np.tile(ann["pos"], len(chr_ids))
-
-    full_rids = set(zip(cell_ids, pos_ids))
-    raw_rids = set(zip(data["cell_id"], data["pos"]))
-    # expected (cell id, locus id) - observed (cell id, locus id)
-    missed_rows = full_rids - raw_rids
-
-    if len(missed_rows) != 0:
-        missed_rows = np.array(list(missed_rows))
-        missed_df = pd.DataFrame(missed_rows, columns=["cell_id", "pos"])
-
-        missed_df["pos"] = missed_df["pos"].astype("int")
-        data = pd.concat([data, missed_df], sort=False)
-
-    # insert all missing cell id and locus id
-    data = data.sort_values(["cell_id", "pos"])
-    return data.reset_index(drop=True)
-
-
-def insert_missing_rows(coor_df, ann_df):
-    """fill all missing loci by NaN.
-
-    Args:
-        coor_df (pd.DataFrame): coordinate df with columns
-            chr, cell_id, pos, x, y, and z of all imaging regions.
-        ann_df (pd.DataFrame): annotation file of all imaging regions.
-    """
-    inserted_ls = []
-    for im_id, data in coor_df.groupby("chr", sort=False):
-        ann = ann_df[ann_df["chr"] == im_id]
-        sub_df = insert_missing_rows_single_chr(data, ann)
-
-        sub_df["chr"] = im_id
-        inserted_ls.append(sub_df)
-
-    return pd.concat(inserted_ls, sort=False)
-
-
 def interpolate_coors_scipy(ann_df, coor_df, kind):
     """impute missing 3D coordinates by scipy's interp1d. The independent
     variable is the starting 1D genomic location of each locus.
@@ -321,8 +208,8 @@ def interpolate_coors_scipy(ann_df, coor_df, kind):
             by scipy's interp1d.
     """
     interp_vals = []
-    for (im_id, _), df in coor_df.groupby(["chr", "cell_id"], sort=False):
-        x = ann_df[ann_df["chr"] == im_id]["start"].values
+    for (im_id, _), df in coor_df.groupby(["region", "haploid"], sort=False):
+        x = ann_df[ann_df["region"] == im_id]["start"].values
         y = df[["x", "y", "z"]].values
         nan_filter = ~np.isnan(y[:, 0])
         interp_fxn = interpolate.interp1d(
@@ -393,7 +280,7 @@ def normalize_pdist_by1d(dist_df):
         pd.DataFrame: dist_df-like object with normalized distances.
     """
     dist_df_ls = []
-    for c, sub_dist_df in dist_df.groupby("chr", sort=False):
+    for c, sub_dist_df in dist_df.groupby("region", sort=False):
         kcol_ls, norm_pdists, trf_val_ls = [], [], []
         for d, df in sub_dist_df.groupby("y-x", sort=False):
             by1d_arr, trf_vals = boxcox_by1d(df.to_darr())
@@ -670,7 +557,7 @@ def generate_single_reg_target(reg_norm_df, save_path):
             row names: combination of bin pairs
         save_path (str): the path of the generated file.
     """
-    reg_id = reg_norm_df["chr"].iloc[0]
+    reg_id = reg_norm_df["region"].iloc[0]
     reg_pred_df = reg_norm_df.copy()
     pdist_arr = reg_pred_df.to_darr().T
 

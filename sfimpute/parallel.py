@@ -1,6 +1,8 @@
 import os
 import pandas as pd
 import numpy as np
+
+from preprocess import read_data, save_coor
 from .impute import *
 
 
@@ -75,10 +77,10 @@ def parallel_dist_mat(
     target_fpath = os.path.join(output_dire, target_fpath)
 
     np.seterr(divide="ignore", invalid="ignore")
-    for reg_id in pd.unique(coor_data["chr"]):
+    for reg_id in pd.unique(coor_data["region"]):
         generate_single_reg_parallel(
-            reg_coor_data=coor_data[coor_data["chr"] == reg_id],
-            reg_ann_df=ann_df[ann_df["chr"] == reg_id],
+            reg_coor_data=coor_data[coor_data["region"] == reg_id],
+            reg_ann_df=ann_df[ann_df["region"] == reg_id],
             reg_id=reg_id,
             target_fpath=target_fpath,
             MPI=MPI,
@@ -107,24 +109,24 @@ def parallel_single_recover(
     if comm.rank == 0:
         coorw_df = read_data(coor_wnan_path)
         lnr_df = read_data(lnr_path)
-        coor_reg = coorw_df[coorw_df["chr"] == reg_id]
-        lnr_reg = lnr_df[lnr_df["chr"] == reg_id]
+        coor_reg = coorw_df[coorw_df["region"] == reg_id]
+        lnr_reg = lnr_df[lnr_df["region"] == reg_id]
 
         tar_chr = DistDataFrame(read_data(reg_target_path))
 
-        assert np.all(pd.unique(coor_reg["cell_id"]) == pd.unique(lnr_reg["cell_id"]))
+        assert np.all(pd.unique(coor_reg["haploid"]) == pd.unique(lnr_reg["haploid"]))
 
         coorbuff = np.stack(
-            coor_reg.groupby("cell_id", sort=False)
+            coor_reg.groupby("haploid", sort=False)
             .apply(lambda x: x.sort_values("pos")[["x", "y", "z"]].values)
             .values
         )
         lnrbuff = np.stack(
-            lnr_reg.groupby("cell_id", sort=False)
+            lnr_reg.groupby("haploid", sort=False)
             .apply(lambda x: x.sort_values("pos")[["x", "y", "z"]].values)
             .values
         ).ravel(order="C")
-        tarbuff = tar_chr[pd.unique(coor_reg["cell_id"])].values.T
+        tarbuff = tar_chr[pd.unique(coor_reg["haploid"])].values.T
 
         shapes = np.array([coorbuff.shape[1], tarbuff.shape[1]])
 
@@ -216,7 +218,7 @@ def parallel_wrapper(MPI, output_dire, suf, ann_path, coor_wnan_path):
     recover_fpath = "recover_coor_" + suf + "_reg{}.txt"
     recover_fpath = os.path.join(output_dire, recover_fpath)
 
-    for reg_id in pd.unique(coorw_df["chr"]):
+    for reg_id in pd.unique(coorw_df["region"]):
         parallel_single_recover(
             MPI=MPI,
             reg_id=reg_id,
@@ -231,13 +233,13 @@ def parallel_wrapper(MPI, output_dire, suf, ann_path, coor_wnan_path):
         recover_coors = pd.concat(
             [
                 read_data(recover_fpath.format(reg_id))
-                for reg_id in pd.unique(coorw_df["chr"])
+                for reg_id in pd.unique(coorw_df["region"])
             ],
             ignore_index=True,
             sort=False,
         )
         save_coor(recover_coors, coor_wnan_path, all_coor_path)
-        for reg_id in pd.unique(coorw_df["chr"]):
+        for reg_id in pd.unique(coorw_df["region"]):
             os.remove(target_fpath.format(reg_id))
             os.remove(recover_fpath.format(reg_id))
         print("Ended")
