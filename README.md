@@ -95,4 +95,4 @@ output/
 
 ## Contact Us
 
-If you encounter any problem while running SnapFISH-IMPUTE or have any questions regarding the rationale, you can send emails to Hongyu Yu (hongyuyu@unc.edu).
+If you have any question regarding SnapFISH-IMPUTE, you can send an email to Hongyu Yu (hongyuyu@unc.edu).
