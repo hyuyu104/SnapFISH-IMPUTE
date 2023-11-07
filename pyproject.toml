@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sfimpute"
+version = "0.0.2"
+authors = [
+  { name="Hongyu Yu", email="hongyuyu@unc.edu" },
+]
+description = "An imputation method for multiplexed DNA FISH data"
+readme = "README.md"
+requires-python = ">=3.8"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+]
+dependencies = [
+    "numpy>=1.19.0",
+    "pandas>=1.1.5",
+    "scipy>=1.5.4",
+    "matplotlib>=3.3.4",
+    "seaborn>=0.11.2",
+    "scikit-image>=0.21.0",
+    "scikit-learn>=1.3.0"
+]
+
+[project.urls]
+"Homepage" = "https://github.com/hyuyu104/SnapFISH-IMPUTE"
+"Bug Tracker" = "https://github.com/hyuyu104/SnapFISH-IMPUTE/issues"
+
+[tool.setuptools]
+packages = ["sfimpute"]
+py-modules = ["__init__"]

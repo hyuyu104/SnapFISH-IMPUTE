@@ -1,0 +1,7 @@
+prune data
+prune jupyter
+prune output
+
+exclude run.sh
+exclude run_impute.py
+exclude .gitignore
